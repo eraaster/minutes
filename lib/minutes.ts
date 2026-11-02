@@ -226,7 +226,7 @@ function dateInTranscript(m: number, d: number, transcript: string): boolean {
 const DATE_RE = /(?:(\d{4})\s*[./-]\s*)?(\d{1,2})\s*(?:[/.]|월)\s*(\d{1,2})(?!\d)\s*일?(\s*[(（]\s*[일월화수목금토]\s*[)）])?/g;
 
 /** 표의 '기한' 칸 하나를 녹취록과 대조해 고침 */
-export function checkDeadline(cell: string, transcript: string, year: number): string {
+export function checkDeadline(cell: string, transcript: string, meeting: Date): string {
   const v = cell.trim();
   if (!v || /^[(（]?\s*(미정|-|없음)\s*[)）]?$/.test(v)) return v;
   const flat = squash(transcript);
@@ -239,9 +239,13 @@ export function checkDeadline(cell: string, transcript: string, year: number): s
 
   if (dates.length && dates.every((m) => dateInTranscript(Number(m[2]), Number(m[3]), transcript))) {
     // 날짜 근거 있음 → 적힌 요일만 회의 연도 달력 기준으로 바로잡음
+    // 연도 없는 날짜가 회의일보다 2개월 넘게 이전이면 다음 해로 봄 (12/15 회의의 1/10 → 다음 해 1/10)
+    const limit = new Date(meeting.getFullYear(), meeting.getMonth() - 2, meeting.getDate());
     return v.replace(DATE_RE, (all, y, mo, d, dow) => {
       if (!dow) return all;
-      const day = new Date(Number(y) || year, Number(mo) - 1, Number(d)).getDay();
+      let date = new Date(Number(y) || meeting.getFullYear(), Number(mo) - 1, Number(d));
+      if (!y && date < limit) date = new Date(meeting.getFullYear() + 1, Number(mo) - 1, Number(d));
+      const day = date.getDay();
       return all.replace(/[일월화수목금토](?=\s*[)）]\s*$)/, DOW[day]);
     });
   }
@@ -256,7 +260,7 @@ export function checkDeadline(cell: string, transcript: string, year: number): s
 }
 
 /** 마크다운 표 중 '기한' 열이 있는 표의 값을 검증 */
-export function verifyDeadlines(md: string, transcript: string, year: number): string {
+export function verifyDeadlines(md: string, transcript: string, meeting: Date): string {
   if (!transcript.trim()) return md;
   let col = -1;
   return md
@@ -273,7 +277,7 @@ export function verifyDeadlines(md: string, transcript: string, year: number): s
       }
       if (/^\s*:?-+:?\s*$/.test(c[0] ?? "")) return line; // 구분선
       if (c[col] === undefined) return line;
-      c[col] = ` ${checkDeadline(c[col], transcript, year)} `;
+      c[col] = ` ${checkDeadline(c[col], transcript, meeting)} `;
       return `|${c.join("|")}|`;
     })
     .join("\n");
@@ -435,8 +439,9 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
     "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요." +
       (info.models?.length ? ` (작성 모델: ${info.models.join(", ")})` : "")
   );
-  const year = Number(info.date.slice(0, 4)) || new Date().getFullYear();
-  return verifyDeadlines(out.join("\n"), transcript, year) + "\n";
+  const md = info.date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const meeting = md ? new Date(Number(md[1]), Number(md[2]) - 1, Number(md[3])) : new Date();
+  return verifyDeadlines(out.join("\n"), transcript, meeting) + "\n";
 }
 
 /** 비어 있는 제목·참석자를 frame 결과로 채움 */
