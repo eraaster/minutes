@@ -774,3 +774,9 @@ a.btn {
   background: transparent;
   border: 1px dashed var(--line);
 }
+
+.headbtns {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}

@@ -37,10 +37,15 @@ type Seg = { id: number; startSec: number; durSec: number; status: SegStatus; te
 type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number };
 
 const GROQ_KEYS_URL = "https://console.groq.com/keys";
-const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type", brief: "mm-brief" };
-const SILENCE_RMS = 0.0015; // 이보다 조용한 100초 구간은 전사 생략
+const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type", brief: "mm-brief", terms: "mm-terms" };
+const SILENCE_RMS = 0.0015; // 이보다 조용한 청크(약 100초)는 전사 생략
 const TEXT_CHUNK = 2800; // 회의록 작성 1회에 보낼 녹취록 글자 수 (Groq 무료: 요청당 약 8K 토큰)
 const TEXT_CHUNK_BRIEF = 4000; // 간결 모드는 출력이 짧아서 더 크게 → 호출 수·지시문 반복 감소
+/** Whisper 힌트: "회의 제목. 용어1, 용어2, …" 200자 이내 (용어가 중간에 잘리지 않게) */
+function whisperPrompt(title: string, terms: string): string {
+  const s = [title.trim(), terms.trim()].filter(Boolean).join(". ");
+  return s.length <= 200 ? s : s.slice(0, 200).replace(/[,.]?\s*[^,.]*$/, "");
+}
 const shortModel = (m: string) => m.replace(/^(openai|meta-llama|qwen)\//, "");
 
 class AuthError extends Error {}
@@ -101,6 +106,8 @@ export default function Home() {
   const [dKey, setDKey] = useState("");
   const [dPw, setDPw] = useState("");
   const [dLang, setDLang] = useState("ko");
+  const [terms, setTerms] = useState(""); // 용어 사전 (쉼표 구분) → Whisper prompt·녹취록 교정
+  const [dTerms, setDTerms] = useState("");
   const [toast, setToast] = useState("");
   const [brief, setBrief] = useState(false);
   const sttFallbackShown = useRef(false);
@@ -118,6 +125,7 @@ export default function Home() {
   const wakeRef = useRef<WakeLockSentinel | null>(null);
 
   const [transcript, setTranscript] = useState("");
+  const [preFix, setPreFix] = useState<string | null>(null); // 교정 전 녹취록 (되돌리기용)
   const editedRef = useRef(false);
   const [minutes, setMinutes] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -132,8 +140,8 @@ export default function Home() {
 
   // useCallback 안에서 최신 값을 읽기 위한 ref
   const openSettingsRef = useRef<(k?: boolean) => void>(() => {});
-  const cfg = useRef({ pw, lang, title, groqKey });
-  cfg.current = { pw, lang, title, groqKey };
+  const cfg = useRef({ pw, lang, title, groqKey, terms });
+  cfg.current = { pw, lang, title, groqKey, terms };
   // "(미정)", "미정", "-" 같은 자리채움 값은 빈칸으로 취급 → AI 자동 입력 대상
   const blank = (v: string) => (/^[\s(（\[]*(미정|없음|미상|tbd|todo|-|\?)?[\s)）\]]*$/i.test(v) ? "" : v.trim());
   const info = (): MeetingInfo => ({
@@ -154,6 +162,7 @@ export default function Home() {
     setLoaded(true);
     setLang(lsGet(LS.lang) || "ko");
     setAuthor(lsGet(LS.author) || "");
+    setTerms(lsGet(LS.terms) || "");
     const t = lsGet(LS.type);
     if (t === "agenda" || t === "external" || t === "weekly") setMtype(t);
     try {
@@ -175,6 +184,7 @@ export default function Home() {
     setDKey(groqKey);
     setDPw(pw);
     setDLang(lang);
+    setDTerms(terms);
   };
   const openSettings = (focusKey = false) => {
     loadDrafts();
@@ -186,7 +196,7 @@ export default function Home() {
     }, 60);
   };
   openSettingsRef.current = openSettings;
-  const dirty = dAuthor !== author || dKey !== groqKey || dPw !== pw || dLang !== lang;
+  const dirty = dAuthor !== author || dKey !== groqKey || dPw !== pw || dLang !== lang || dTerms !== terms;
   const keyBad = !!dKey.trim() && !KEY_RE.test(dKey.trim());
   const saveSettings = () => {
     if (keyBad) {
@@ -203,6 +213,10 @@ export default function Home() {
     lsSet(LS.key, k);
     lsSet(LS.pw, dPw);
     lsSet(LS.lang, dLang);
+    const t = parseParticipants(dTerms).join(", ");
+    setTerms(t);
+    setDTerms(t);
+    lsSet(LS.terms, t);
     setSettingsOpen(false);
     setError("");
     const who = a ? `${a}님` : "설정";
@@ -283,11 +297,9 @@ export default function Home() {
             `오늘 무료 사용 한도를 모두 썼습니다. 약 ${mins >= 60 ? `${Math.ceil(mins / 60)}시간` : `${mins}분`} 뒤에 다시 시도해 주세요. (녹취록은 그대로 남아 있습니다)`
           );
         }
-        setWaitMsg(
-          res.status === 429
-            ? `무료 사용 한도에 걸려 ${sec}초 기다린 뒤 다시 시도합니다…`
-            : `서버 오류(${res.status}) · ${sec}초 뒤 다시 시도합니다…`
-        );
+        // 분당 한도 대기는 대부분 몇 초라 20초 미만이면 조용히 재시도
+        if (res.status !== 429) setWaitMsg(`서버 오류(${res.status}) · ${sec}초 뒤 다시 시도합니다…`);
+        else if (sec >= 20) setWaitMsg(`잠시 대기 중… ${sec}초`);
         await sleep((sec + 1) * 1000);
         setWaitMsg("");
         continue;
@@ -315,8 +327,8 @@ export default function Home() {
 
         const fd = new FormData();
         fd.append("file", encodeWav(pcm), "chunk.wav");
-        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목만 힌트로
-        fd.append("prompt", cfg.current.title);
+        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목 + 용어 사전만 힌트로
+        fd.append("prompt", whisperPrompt(cfg.current.title, cfg.current.terms));
         fd.append("language", cfg.current.lang);
         try {
           const data = await callApi("/api/transcribe", { method: "POST", body: fd });
@@ -492,6 +504,44 @@ export default function Home() {
   const usedModels = useRef<Set<string>>(new Set());
   const llmFallback = useRef("");
 
+  /* ----- 녹취록 교정: 2,800자 구간마다 음성인식 오류만 고침 ----- */
+  const fixTranscript = async () => {
+    const orig = transcript;
+    if (!orig.trim()) return;
+    setError("");
+    const ts = (t: string) => (t.match(/\[\d{1,2}:\d{2}(?::\d{2})?\]/g) || []).join();
+    const ctxBase = { ...info(), dateLabel: dateLabel(date), terms: parseParticipants(terms) } as PromptCtx;
+    try {
+      const parts = splitText(orig, TEXT_CHUNK);
+      const out: string[] = [];
+      for (let i = 0; i < parts.length; i++) {
+        setBusy(`녹취록 교정 중… ${Math.round((i / parts.length) * 100)}%`);
+        const data = await callApi("/api/summarize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stage: "fix", text: parts[i], ctx: { ...ctxBase, part: i + 1, total: parts.length } }),
+        });
+        const fixed = String(data.content || "").trim();
+        // 잘렸거나, 많이 줄었거나(삭제·요약), 타임스탬프가 바뀌었으면 그 구간은 원문 유지
+        const ok = fixed && !data.truncated && fixed.length >= parts[i].length * 0.8 && ts(fixed) === ts(parts[i]);
+        out.push(ok ? fixed : parts[i]);
+      }
+      const next = out.join("\n").replace(/\n+(?=\[\d{1,2}:\d{2})/g, "\n\n");
+      editedRef.current = true;
+      setPreFix(orig);
+      setTranscript(next);
+    } catch (e) {
+      setError(`녹취록 교정 실패: ${(e as Error).message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const undoFix = () => {
+    if (preFix === null) return;
+    setTranscript(preFix);
+    setPreFix(null);
+  };
+
   const makeMinutes = async () => {
     const text = transcript.trim();
     if (!text) return;
@@ -585,6 +635,7 @@ export default function Home() {
     commit([]);
     editedRef.current = false;
     setTranscript("");
+    setPreFix(null);
     setMinutes("");
     sttFallbackShown.current = false;
     setTitle("");
@@ -606,6 +657,7 @@ export default function Home() {
     setTitle(h.title);
     setDate(h.date);
     setTranscript(h.transcript);
+    setPreFix(null);
     setMinutes(h.minutes);
     setFromHistory(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -637,7 +689,7 @@ export default function Home() {
   const doneSec = segs.filter((s) => s.status !== "queued" && s.status !== "working").reduce((n, s) => n + s.durSec, 0);
   const sttPct = totalSec > 0 ? Math.min(100, Math.round((doneSec / totalSec) * 100)) : 0;
   const failed = segs.filter((s) => s.status === "failed").length;
-  const genBusy = busy.startsWith("회의록");
+  const genBusy = busy.startsWith("회의록") || busy.startsWith("녹취록 교정");
   const canSummarize = recState === "idle" && pending === 0 && !busy && transcript.trim().length > 0;
 
   return (
@@ -751,6 +803,17 @@ export default function Home() {
                 </select>
               </label>
             </div>
+            <label className="field mt">
+              <span>용어 사전 (쉼표 구분)</span>
+              <input
+                value={dTerms}
+                onChange={(e) => setDTerms(e.target.value)}
+                placeholder="예: 아크릴, GPUBASE, 아크릴 넥스트, 모듈장, R&R"
+                autoComplete="off"
+                enterKeyHint="done"
+              />
+              <small className="muted">받아쓰기 힌트와 녹취록 교정에 사용해요. 회사·제품·사람 이름을 넣으면 정확도가 올라가요.</small>
+            </label>
             <div className="field keyfield mt">
               <span>
                 내 Groq API 키 (무료) ·{" "}
@@ -859,7 +922,7 @@ export default function Home() {
                 <span className="mic" />
               </button>
               <p className="hint">
-                누르면 녹음이 시작되고, 100초마다 자동으로 받아적습니다.
+                누르면 녹음이 시작되고, 약 100초마다 자동으로 받아적습니다.
                 <br />
                 휴대폰은 <b>화면을 켜둔 채</b> 사용하세요.
               </p>
@@ -956,6 +1019,21 @@ export default function Home() {
           <div className="sectionhead">
             <h2>녹취록</h2>
             <span className="muted">{transcript.length.toLocaleString()}자 · 직접 수정 가능</span>
+            <span className="headbtns">
+              {preFix !== null && !busy && (
+                <button className="btn ghost sm" onClick={undoFix} title="교정 전 녹취록으로 되돌리기">
+                  되돌리기
+                </button>
+              )}
+              <button
+                className="btn sm"
+                disabled={!canSummarize}
+                onClick={fixTranscript}
+                title="AI가 용어 사전을 참고해 음성인식 오류만 고쳐요 (내용은 바꾸지 않음)"
+              >
+                녹취록 교정
+              </button>
+            </span>
           </div>
           <textarea
             className="transcript"

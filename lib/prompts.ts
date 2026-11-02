@@ -1,6 +1,6 @@
 import type { PromptCtx } from "./minutes";
 
-export type Stage = "body" | "frame";
+export type Stage = "body" | "frame" | "fix";
 
 /**
  * 회의록 작성 요령(사내 공지) 기준
@@ -17,6 +17,19 @@ const TYPE_LABEL: Record<PromptCtx["type"], string> = {
 };
 
 export function systemPrompt(stage: Stage, ctx: PromptCtx): string {
+  if (stage === "fix")
+    return `당신은 회의 녹취록 교정자입니다. 음성인식(받아쓰기) 결과의 한 구간을 받아 음성인식 오류만 고칩니다.
+
+[규칙]
+- 잘못 들린 단어만 바로잡음. 예) 용어 사전의 단어가 비슷한 발음의 엉뚱한 단어로 적힌 경우, 띄어쓰기·맞춤법이 명백히 틀린 경우.
+- [용어 사전]에 있는 표기를 우선 사용.
+- 의미 추가·요약·삭제·문장 재구성 금지. 말투(구어체)도 그대로. 반복·군말도 지우지 않음.
+- 고유명사·숫자·금액·날짜는 그대로 유지.
+- [mm:ss] 타임스탬프와 줄바꿈은 위치·내용 모두 그대로 유지.
+- 확실하지 않으면 원문 그대로 둠.
+
+[출력] 교정된 녹취록 본문만, 설명·머리말 없이.`;
+
   if (stage === "body") {
     const extra: string[] = [];
     if (ctx.type === "external") extra.push("역할: 소속(회사/기관) | 담당 | 상세 내용 | 기한");
@@ -115,6 +128,13 @@ export function userPrompt(stage: Stage, text: string, ctx: PromptCtx): string {
     .filter(Boolean)
     .join("\n");
 
+  if (stage === "fix") {
+    return `[회의 제목] ${ctx.title || "없음"}
+[용어 사전] ${ctx.terms?.length ? ctx.terms.join(", ") : "없음"}
+
+[녹취록 구간 ${ctx.part}/${ctx.total}]
+${text}`;
+  }
   if (stage === "body") {
     return `[회의 정보]
 ${info}

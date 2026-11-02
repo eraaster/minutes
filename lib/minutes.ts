@@ -42,6 +42,7 @@ export type PromptCtx = {
   needTitle?: boolean;
   needPeople?: boolean;
   brief?: boolean; // 간결 모드 (토큰 절약)
+  terms?: string[]; // 용어 사전 (녹취록 교정용)
 };
 
 export type Section = { title: string; content: string };

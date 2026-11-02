@@ -1,11 +1,35 @@
 /**
  * 브라우저 오디오 유틸
  * - 모든 오디오를 16kHz mono로 변환 (Whisper 입력 규격)
- * - 100초 단위 WAV 청크(약 3.2MB)로 잘라서 Vercel 요청 크기 제한(4.5MB)을 피함
+ * - 90~110초 사이 가장 조용한 지점에서 WAV 청크(최대 약 3.5MB)로 잘라서 Vercel 요청 크기 제한(4.5MB)을 피함
+ *   (말 중간에서 잘리면 앞뒤 구간 모두 인식이 틀어지기 쉬움)
  */
 
 export const TARGET_RATE = 16000;
-export const CHUNK_SEC = 100;
+export const CHUNK_MIN_SEC = 90;
+export const CHUNK_MAX_SEC = 110;
+const CUT_WIN = TARGET_RATE / 20; // 50ms 창
+
+/** f 안에서 50ms 창 RMS가 가장 작은 창의 가운데 위치 */
+function quietestPoint(f: Float32Array): number {
+  let best = 0;
+  let bestE = Infinity;
+  for (let i = 0; i + CUT_WIN <= f.length; i += CUT_WIN) {
+    let e = 0;
+    for (let j = i; j < i + CUT_WIN; j++) e += f[j] * f[j];
+    if (e < bestE) {
+      bestE = e;
+      best = i;
+    }
+  }
+  return best + (CUT_WIN >> 1);
+}
+
+/** 앞에서부터 90~110초 사이에서 가장 조용한 지점 (f는 110초 이상) */
+function cutPoint(f: Float32Array): number {
+  const min = CHUNK_MIN_SEC * TARGET_RATE;
+  return min + quietestPoint(f.subarray(min, CHUNK_MAX_SEC * TARGET_RATE));
+}
 
 /* ---------- PCM / WAV ---------- */
 
@@ -136,7 +160,7 @@ export class MicRecorder {
   private pending: Float32Array[] = [];
   private pendingLen = 0;
   private emitted = 0; // 지금까지 내보낸 샘플 수 (16kHz 기준)
-  private chunkSamples = CHUNK_SEC * TARGET_RATE;
+  private maxSamples = CHUNK_MAX_SEC * TARGET_RATE;
   private paused = false;
 
   constructor(
@@ -209,7 +233,17 @@ export class MicRecorder {
     if (!f.length) return;
     this.pending.push(f);
     this.pendingLen += f.length;
-    while (this.pendingLen >= this.chunkSamples) this.emit(this.chunkSamples);
+    while (this.pendingLen >= this.maxSamples) {
+      // 110초가 쌓이면 한 덩어리로 합쳐서 90~110초 사이 가장 조용한 지점에서 자름
+      const all = new Float32Array(this.pendingLen);
+      let o = 0;
+      for (const p of this.pending) {
+        all.set(p, o);
+        o += p.length;
+      }
+      this.pending = [all];
+      this.emit(cutPoint(all));
+    }
   }
 
   private emit(n: number) {
@@ -296,12 +330,14 @@ function mixdown(buf: AudioBuffer): Float32Array {
 }
 
 export function splitToChunks(f: Float32Array): { pcm: Int16Array; startSec: number }[] {
-  const n = CHUNK_SEC * TARGET_RATE;
+  const max = CHUNK_MAX_SEC * TARGET_RATE;
   const out: { pcm: Int16Array; startSec: number }[] = [];
-  for (let i = 0; i < f.length; i += n) {
-    const part = f.subarray(i, i + n);
-    if (part.length < TARGET_RATE * 0.5) break;
-    out.push({ pcm: floatToInt16(part), startSec: i / TARGET_RATE });
+  let i = 0;
+  while (f.length - i >= TARGET_RATE * 0.5) {
+    const rest = f.subarray(i);
+    const n = rest.length > max ? cutPoint(rest) : rest.length;
+    out.push({ pcm: floatToInt16(rest.subarray(0, n)), startSec: i / TARGET_RATE });
+    i += n;
   }
   return out;
 }
