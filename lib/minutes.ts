@@ -348,7 +348,8 @@ export function autoFill(info: MeetingInfo, frameRaw: string): MeetingInfo {
   const f = parseFrame(frameRaw);
   const out = { ...info };
   const t = f.get("title");
-  if (!out.title && t && !/^(미상|없음|\(?불명확\)?)$/.test(t)) out.title = t.slice(0, 80);
+  const placeholder = /^[\s(（\[]*(미정|미상|없음|불명확|입력되지 않음[^)]*|-)?[\s)）\]]*$/;
+  if (!out.title && t && !placeholder.test(t)) out.title = t.slice(0, 80);
   const p = f.get("people");
   if (!out.participants.length && p) {
     const names = p
