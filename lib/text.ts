@@ -144,3 +144,109 @@ export function mdToHtml(md: string): string {
   }
   return html.join("\n");
 }
+
+/* ---------- 녹취록 교정 검증 · 단어 단위 diff ---------- */
+
+/** 문자 단위 편집거리 기반 유사도 (0~1). 2,800자 구간 기준 O(n·m), 메모리는 두 줄만 */
+export function similarity(a: string, b: string): number {
+  if (a === b) return 1;
+  const n = a.length;
+  const m = b.length;
+  if (!n || !m) return 0;
+  let prev = new Uint32Array(m + 1);
+  let cur = new Uint32Array(m + 1);
+  for (let j = 0; j <= m; j++) prev[j] = j;
+  for (let i = 1; i <= n; i++) {
+    cur[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= m; j++) {
+      const sub = prev[j - 1] + (ca === b.charCodeAt(j - 1) ? 0 : 1);
+      cur[j] = Math.min(sub, prev[j] + 1, cur[j - 1] + 1);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return 1 - prev[m] / Math.max(n, m);
+}
+
+const OMIT_RE = /생략|중략|…|\.\.\./g;
+const TS_RE = /\[\d{1,2}:\d{2}(?::\d{2})?\]/g;
+
+/** 교정본을 받아들여도 되는지. 문제가 있으면 이유, 없으면 null */
+export function rejectFix(orig: string, fixed: string): string | null {
+  if (!fixed.trim()) return "빈 응답";
+  if ((fixed.match(OMIT_RE) || []).length > (orig.match(OMIT_RE) || []).length) return "생략 표시 추가";
+  const ratio = fixed.length / Math.max(1, orig.length);
+  if (ratio < 0.9 || ratio > 1.1) return `길이 변화 ${Math.round(ratio * 100)}%`;
+  if ((fixed.match(TS_RE) || []).join() !== (orig.match(TS_RE) || []).join()) return "타임스탬프 변경";
+  const sim = similarity(orig, fixed);
+  if (sim < 0.85) return `유사도 ${Math.round(sim * 100)}%`;
+  return null;
+}
+
+export type Hunk = { a0: number; a1: number; before: string; after: string; ctx: string; on: boolean };
+export type FixPart = { tokens: string[]; hunks: Hunk[] };
+
+const tokenize = (s: string) => s.match(/\s+|[^\s]+/g) || [];
+
+/** 단어 단위 diff (LCS). 공백 하나로만 떨어진 변경은 한 항목으로 묶음 */
+export function wordDiff(orig: string, fixed: string): FixPart {
+  const a = tokenize(orig);
+  const b = tokenize(fixed);
+  const n = a.length;
+  const m = b.length;
+  const W = m + 1;
+  const L = new Uint16Array((n + 1) * W); // L[i][j] = a[i..], b[j..]의 LCS 길이
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      L[i * W + j] = a[i] === b[j] ? L[(i + 1) * W + j + 1] + 1 : Math.max(L[(i + 1) * W + j], L[i * W + j + 1]);
+
+  type Raw = { a0: number; a1: number; b0: number; b1: number };
+  const raw: Raw[] = [];
+  let i = 0;
+  let j = 0;
+  let open: Raw | null = null;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      open = null;
+      i++;
+      j++;
+      continue;
+    }
+    if (!open) raw.push((open = { a0: i, a1: i, b0: j, b1: j }));
+    if (j < m && (i >= n || L[i * W + j + 1] >= L[(i + 1) * W + j])) open.b1 = ++j;
+    else open.a1 = ++i;
+  }
+  // 사이에 공백 토큰 하나만 있는 변경은 합침 ("모디건 이" → "모듈원 이" 같은 경우 읽기 쉽게)
+  const merged: Raw[] = [];
+  for (const r of raw) {
+    const p = merged[merged.length - 1];
+    if (p && r.a0 - p.a1 === 1 && r.b0 - p.b1 === 1 && /^\s+$/.test(a[p.a1])) {
+      p.a1 = r.a1;
+      p.b1 = r.b1;
+    } else merged.push({ ...r });
+  }
+  const hunks = merged
+    .map((r) => ({
+      a0: r.a0,
+      a1: r.a1,
+      before: a.slice(r.a0, r.a1).join(""),
+      after: b.slice(r.b0, r.b1).join(""),
+      ctx: a.slice(Math.max(0, r.a0 - 4), r.a0).join("").slice(-16),
+      on: true,
+    }))
+    .filter((h) => h.before.trim() !== h.after.trim()); // 공백만 바뀐 건 무시
+  return { tokens: a, hunks };
+}
+
+/** 원문 토큰에 켜져 있는(on) 변경만 적용 */
+export function applyFix(p: FixPart): string {
+  const out: string[] = [];
+  let k = 0;
+  for (const h of p.hunks) {
+    if (!h.on) continue;
+    out.push(...p.tokens.slice(k, h.a0), h.after);
+    k = h.a1;
+  }
+  out.push(...p.tokens.slice(k));
+  return out.join("");
+}

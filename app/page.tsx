@@ -11,7 +11,7 @@ import {
   rmsInt16,
   splitToChunks,
 } from "@/lib/audio";
-import { cleanTranscript, mdToHtml, splitText } from "@/lib/text";
+import { FixPart, applyFix, cleanTranscript, mdToHtml, rejectFix, splitText, wordDiff } from "@/lib/text";
 import {
   MEETING_TYPES,
   MeetingInfo,
@@ -47,6 +47,8 @@ function whisperPrompt(title: string, terms: string): string {
   const s = [title.trim(), terms.trim()].filter(Boolean).join(". ");
   return s.length <= 200 ? s : s.slice(0, 200).replace(/[,.]?\s*[^,.]*$/, "");
 }
+/** 교정 구간들을 합쳐 녹취록으로 (타임스탬프 앞은 빈 줄) */
+const joinFix = (parts: FixPart[]) => parts.map(applyFix).join("\n").replace(/\n+(?=\[\d{1,2}:\d{2})/g, "\n\n");
 const shortModel = (m: string) => m.replace(/^(openai|meta-llama|qwen)\//, "");
 
 class AuthError extends Error {}
@@ -127,6 +129,7 @@ export default function Home() {
 
   const [transcript, setTranscript] = useState("");
   const [preFix, setPreFix] = useState<string | null>(null); // 교정 전 녹취록 (되돌리기용)
+  const [fixParts, setFixParts] = useState<FixPart[] | null>(null); // 교정 변경 내역 (항목별 되돌리기)
   const editedRef = useRef(false);
   const [minutes, setMinutes] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -510,11 +513,11 @@ export default function Home() {
     const orig = transcript;
     if (!orig.trim()) return;
     setError("");
-    const ts = (t: string) => (t.match(/\[\d{1,2}:\d{2}(?::\d{2})?\]/g) || []).join();
     const ctxBase = { ...info(), dateLabel: dateLabel(date), terms: parseParticipants(terms) } as PromptCtx;
     try {
       const parts = splitText(orig, TEXT_CHUNK);
-      const out: string[] = [];
+      const out: FixPart[] = [];
+      let rejected = 0;
       for (let i = 0; i < parts.length; i++) {
         setBusy(`녹취록 교정 중… ${Math.round((i / parts.length) * 100)}%`);
         const data = await callApi("/api/summarize", {
@@ -523,14 +526,22 @@ export default function Home() {
           body: JSON.stringify({ stage: "fix", text: parts[i], ctx: { ...ctxBase, part: i + 1, total: parts.length } }),
         });
         const fixed = String(data.content || "").trim();
-        // 잘렸거나, 많이 줄었거나(삭제·요약), 타임스탬프가 바뀌었으면 그 구간은 원문 유지
-        const ok = fixed && !data.truncated && fixed.length >= parts[i].length * 0.8 && ts(fixed) === ts(parts[i]);
-        out.push(ok ? fixed : parts[i]);
+        // 잘림·생략 표시·길이 ±10% 초과·유사도 85% 미만·타임스탬프 변경 → 그 구간은 원문 유지
+        const bad = data.truncated ? "잘림" : rejectFix(parts[i], fixed);
+        if (bad) rejected++;
+        out.push(wordDiff(parts[i], bad ? parts[i] : fixed));
       }
-      const next = out.join("\n").replace(/\n+(?=\[\d{1,2}:\d{2})/g, "\n\n");
+      const n = out.reduce((k, p) => k + p.hunks.length, 0);
+      const skip = rejected ? ` · ${rejected}개 구간은 변경이 커서 원문 유지` : "";
+      if (!n) {
+        setNotice(`바뀐 부분이 없어요${skip}.`);
+        return;
+      }
       editedRef.current = true;
       setPreFix(orig);
-      setTranscript(next);
+      setFixParts(out);
+      setTranscript(joinFix(out));
+      setNotice(`녹취록 교정: ${n}곳 수정${skip}. 녹취록 아래 목록에서 하나씩 되돌릴 수 있어요.`);
     } catch (e) {
       setError(`녹취록 교정 실패: ${(e as Error).message}`);
     } finally {
@@ -541,6 +552,17 @@ export default function Home() {
     if (preFix === null) return;
     setTranscript(preFix);
     setPreFix(null);
+    setFixParts(null);
+    setFixParts(null);
+  };
+  /** 교정 항목 하나만 원문으로 */
+  const revertHunk = (pi: number, hi: number) => {
+    if (!fixParts) return;
+    const next = fixParts.map((p, i) =>
+      i !== pi ? p : { ...p, hunks: p.hunks.map((h, j) => (j === hi ? { ...h, on: false } : h)) }
+    );
+    setFixParts(next);
+    setTranscript(joinFix(next));
   };
 
   const makeMinutes = async () => {
@@ -641,6 +663,7 @@ export default function Home() {
     editedRef.current = false;
     setTranscript("");
     setPreFix(null);
+    setFixParts(null);
     setMinutes("");
     sttFallbackShown.current = false;
     setTitle("");
@@ -663,6 +686,7 @@ export default function Home() {
     setDate(h.date);
     setTranscript(h.transcript);
     setPreFix(null);
+    setFixParts(null);
     setMinutes(h.minutes);
     setFromHistory(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1046,10 +1070,31 @@ export default function Home() {
             readOnly={pending > 0 || recState !== "idle"}
             onChange={(e) => {
               editedRef.current = true;
+              setFixParts(null); // 직접 고치면 항목별 되돌리기 목록은 닫음 (전체 되돌리기는 유지)
               setTranscript(e.target.value);
             }}
             placeholder={pending > 0 || recState !== "idle" ? "받아적는 중입니다…" : ""}
           />
+          {fixParts && fixParts.some((p) => p.hunks.some((h) => h.on)) && (
+            <details className="fixlist" open>
+              <summary>바뀐 부분 {fixParts.reduce((k, p) => k + p.hunks.filter((h) => h.on).length, 0)}곳</summary>
+              <ul>
+                {fixParts.flatMap((p, pi) =>
+                  p.hunks.map((h, hi) =>
+                    h.on ? (
+                      <li key={`${pi}-${hi}`}>
+                        <span className="muted">…{h.ctx}</span>
+                        <del>{h.before.trim() || "(없음)"}</del> → <ins>{h.after.trim() || "(삭제)"}</ins>
+                        <button className="btn ghost sm" disabled={!!busy} onClick={() => revertHunk(pi, hi)}>
+                          되돌리기
+                        </button>
+                      </li>
+                    ) : null
+                  )
+                )}
+              </ul>
+            </details>
+          )}
           <div className="actions">
             {transcript && (
               <button className="btn ghost" onClick={() => download(`${baseName}_녹취록.txt`, new Blob([transcript]))}>

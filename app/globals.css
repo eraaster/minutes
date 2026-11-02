@@ -780,3 +780,10 @@ a.btn {
   gap: 6px;
   margin-left: auto;
 }
+
+.fixlist { margin-top: 10px; }
+.fixlist ul { list-style: none; padding: 0; margin: 8px 0 0; }
+.fixlist li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0; border-top: 1px solid var(--line); }
+.fixlist del { color: var(--err-ink); }
+.fixlist ins { color: var(--accent); text-decoration: none; font-weight: 600; }
+.fixlist li .btn { margin-left: auto; }
