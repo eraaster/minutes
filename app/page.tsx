@@ -35,7 +35,8 @@ type SegStatus = "queued" | "working" | "done" | "skipped" | "failed";
 type Seg = { id: number; startSec: number; durSec: number; status: SegStatus; text: string; error?: string };
 type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number };
 
-const LS = { pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type" };
+const GROQ_KEYS_URL = "https://console.groq.com/keys";
+const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type" };
 const SILENCE_RMS = 0.0015; // 이보다 조용한 100초 구간은 전사 생략
 const TEXT_CHUNK = 2800; // 회의록 작성 1회에 보낼 녹취록 글자 수 (Groq 무료: 요청당 약 8K 토큰)
 
@@ -89,6 +90,10 @@ export default function Home() {
   const [date, setDate] = useState(today());
   const [lang, setLang] = useState("ko");
   const [pw, setPw] = useState("");
+  const [groqKey, setGroqKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const [segs, setSegs] = useState<Seg[]>([]);
   const segsRef = useRef<Seg[]>([]);
@@ -115,8 +120,8 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false);
 
   // useCallback 안에서 최신 값을 읽기 위한 ref
-  const cfg = useRef({ pw, lang, title });
-  cfg.current = { pw, lang, title };
+  const cfg = useRef({ pw, lang, title, groqKey });
+  cfg.current = { pw, lang, title, groqKey };
   const info = (): MeetingInfo => ({
     title: title.trim(),
     date,
@@ -130,6 +135,8 @@ export default function Home() {
   /* ----- 초기 로드 ----- */
   useEffect(() => {
     setPw(lsGet(LS.pw) || "");
+    setGroqKey(lsGet(LS.key) || "");
+    setLoaded(true);
     setLang(lsGet(LS.lang) || "ko");
     setAuthor(lsGet(LS.author) || "");
     const t = lsGet(LS.type);
@@ -141,6 +148,9 @@ export default function Home() {
     }
   }, []);
   useEffect(() => lsSet(LS.pw, pw), [pw]);
+  useEffect(() => {
+    if (loaded) lsSet(LS.key, groqKey.trim());
+  }, [groqKey, loaded]);
   useEffect(() => lsSet(LS.lang, lang), [lang]);
   useEffect(() => lsSet(LS.author, author), [author]);
   useEffect(() => lsSet(LS.type, mtype), [mtype]);
@@ -174,6 +184,7 @@ export default function Home() {
     for (let attempt = 0; attempt < 8; attempt++) {
       const headers = new Headers(init.headers);
       if (cfg.current.pw) headers.set("x-app-password", encodeURIComponent(cfg.current.pw));
+      if (cfg.current.groqKey.trim()) headers.set("x-groq-key", cfg.current.groqKey.trim());
       let res: Response;
       try {
         res = await fetch(url, { ...init, headers });
@@ -182,7 +193,11 @@ export default function Home() {
         continue;
       }
       if (res.ok) return res.json();
-      if (res.status === 401) throw new AuthError("비밀번호가 틀렸습니다. 설정에서 접속 비밀번호를 확인해 주세요.");
+      if (res.status === 401) {
+        const b = await res.json().catch(() => ({}));
+        setSettingsOpen(true);
+        throw new AuthError(b.error || "설정에서 '내 Groq API 키'를 넣거나 접속 비밀번호를 입력해 주세요.");
+      }
       if (res.status === 429 || res.status >= 500) {
         const ra = Number(res.headers.get("retry-after"));
         const sec = Number.isFinite(ra) && ra > 0 ? Math.ceil(ra) : Math.min(60, 4 * 2 ** attempt);
@@ -561,8 +576,38 @@ export default function Home() {
             autoComplete="off"
             name="mm-participants" />
         </label>
-        <details className="settings">
-          <summary>설정</summary>
+        <details
+          className="settings"
+          open={settingsOpen}
+          onToggle={(e) => setSettingsOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary>설정{groqKey.trim() ? " · 내 키 사용 중" : ""}</summary>
+          <div className="field keyfield">
+            <span>
+              내 Groq API 키 (무료) ·{" "}
+              <a href={GROQ_KEYS_URL} target="_blank" rel="noopener noreferrer">
+                발급받기 ↗
+              </a>
+            </span>
+            <div className="keyrow">
+              <input
+                id="groq-key"
+                type={showKey ? "text" : "password"}
+                value={groqKey}
+                onChange={(e) => setGroqKey(e.target.value)}
+                placeholder="gsk_로 시작하는 키 붙여넣기"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button type="button" className="btn sm" onClick={() => setShowKey((v) => !v)}>
+                {showKey ? "숨기기" : "보기"}
+              </button>
+            </div>
+            {groqKey.trim() && !/^gsk_[A-Za-z0-9]{20,}$/.test(groqKey.trim()) && (
+              <small className="warnline">키 형식이 맞지 않아요. gsk_로 시작하는 전체 키를 붙여넣어 주세요.</small>
+            )}
+            <small className="muted">키는 이 브라우저에만 저장되고, 내 키를 넣으면 비밀번호 없이 내 무료 한도로 사용해요.</small>
+          </div>
           <div className="row">
             <label className="field">
               <span>작성자</span>
@@ -577,18 +622,56 @@ export default function Home() {
               </select>
             </label>
             <label className="field grow">
-              <span>접속 비밀번호</span>
+              <span>접속 비밀번호 (키가 없을 때)</span>
               <input
                 type="password"
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
-                placeholder="서버에 APP_PASSWORD를 설정한 경우"
+                placeholder="사이트 관리자에게 받은 비밀번호"
                 autoComplete="current-password"
               />
             </label>
           </div>
         </details>
       </section>
+
+      {loaded && !groqKey.trim() && !pw && (
+        <section className="card onboard">
+          <strong>처음이신가요? 무료 키 하나만 있으면 돼요</strong>
+          <ol>
+            <li>
+              <a href={GROQ_KEYS_URL} target="_blank" rel="noopener noreferrer">
+                Groq 콘솔
+              </a>
+              에 구글 계정으로 가입 (카드 등록 없음)
+            </li>
+            <li>
+              <b>Create API Key</b> → 이름 아무거나 → 생성된 <code>gsk_…</code> 키 복사
+            </li>
+            <li>
+              위쪽 <b>설정 → 내 Groq API 키</b>에 붙여넣기
+            </li>
+          </ol>
+          <div className="actions">
+            <button
+              className="btn"
+              onClick={() => {
+                setSettingsOpen(true);
+                setTimeout(() => {
+                  const el = document.getElementById("groq-key");
+                  el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  el?.focus();
+                }, 50);
+              }}
+            >
+              키 입력하기
+            </button>
+            <a className="btn primary" href={GROQ_KEYS_URL} target="_blank" rel="noopener noreferrer">
+              무료 키 발급받기 ↗
+            </a>
+          </div>
+        </section>
+      )}
 
       {error && <div className="alert error">{error}</div>}
       {notice && (

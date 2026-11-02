@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { GROQ_BASE, checkAuth, forwardGroqError, getKey } from "@/lib/server";
+import { GROQ_BASE, NO_KEY_MSG, checkAuth, forwardGroqError, getKey } from "@/lib/server";
 import { Stage, systemPrompt, userPrompt } from "@/lib/prompts";
 import type { PromptCtx } from "@/lib/minutes";
 
@@ -16,9 +16,9 @@ export async function POST(req: Request) {
   const denied = checkAuth(req);
   if (denied) return denied;
 
-  const key = getKey();
+  const key = getKey(req);
   if (!key) {
-    return NextResponse.json({ error: "서버에 GROQ_API_KEY가 설정되지 않았습니다." }, { status: 500 });
+    return NextResponse.json({ error: NO_KEY_MSG, code: "auth" }, { status: 401 });
   }
 
   const body = (await req.json().catch(() => null)) as Body | null;

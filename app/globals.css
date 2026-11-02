@@ -579,3 +579,53 @@ textarea:focus {
   margin-top: 24px;
   line-height: 1.6;
 }
+
+.keyfield {
+  margin-bottom: 12px;
+}
+.keyrow {
+  display: flex;
+  gap: 8px;
+}
+.keyrow .btn {
+  white-space: nowrap;
+  flex: none;
+}
+.keyrow input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+.field a,
+.onboard a {
+  color: var(--accent);
+  font-weight: 600;
+}
+a.btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+.warnline {
+  color: var(--err-ink);
+  font-size: 12px;
+}
+.field small.muted {
+  font-size: 12px;
+}
+.onboard {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.onboard ol {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  font-size: 14px;
+}
+.onboard li {
+  margin: 4px 0;
+}
+.onboard code {
+  background: var(--card);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
