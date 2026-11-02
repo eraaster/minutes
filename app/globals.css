@@ -787,3 +787,23 @@ a.btn {
 .fixlist del { color: var(--err-ink); }
 .fixlist ins { color: var(--accent); text-decoration: none; font-weight: 600; }
 .fixlist li .btn { margin-left: auto; }
+
+/* 용어 사전 표 (설정) */
+.gloss { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.gloss-row { display: grid; grid-template-columns: 1fr 1.2fr 1.6fr 28px; gap: 6px; align-items: center; }
+.gloss-head { font-size: 12px; color: var(--muted); }
+.gloss-row input { padding: 7px 9px; font-size: 14px; }
+.gloss-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 560px) {
+  .gloss-head { display: none; }
+  .gloss-row { grid-template-columns: 1fr 28px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .gloss-row input { grid-column: 1; }
+  .gloss-row .x { grid-column: 2; grid-row: 1; }
+}
+
+/* 녹취록 도구줄 (찾아 바꾸기 · 사전 등록) */
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.tools input { flex: 1 1 130px; width: auto; padding: 7px 9px; font-size: 14px; }
+.tools .btn { flex: none; }
+.sectionhead { flex-wrap: wrap; }
+.headbtns { flex-wrap: wrap; }

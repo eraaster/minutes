@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { GROQ_BASE, NO_KEY_MSG, checkAuth, forwardGroqError, getKey } from "@/lib/server";
 import { Stage, systemPrompt, userPrompt } from "@/lib/prompts";
 import type { PromptCtx } from "@/lib/minutes";
+import { CONTEXT_MAX } from "@/lib/glossary";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
     participants: (body.ctx.participants || []).slice(0, 40),
     prevTitles: (body.ctx.prevTitles || []).slice(-15),
     knownTerms: (body.ctx.knownTerms || []).slice(-40),
-    terms: (body.ctx.terms || []).slice(0, 60),
+    glossary: String(body.ctx.glossary || "").slice(0, CONTEXT_MAX),
   };
 
   const messages = [

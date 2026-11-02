@@ -11,6 +11,15 @@ import {
   rmsInt16,
   splitToChunks,
 } from "@/lib/audio";
+import {
+  GlossaryEntry,
+  applyGlossary,
+  findGlossary,
+  glossaryContext,
+  migrateTerms,
+  normalizeGlossary,
+  parseGlossary,
+} from "@/lib/glossary";
 import { FixPart, applyFix, cleanTranscript, mdToHtml, rejectFix, splitText, wordDiff } from "@/lib/text";
 import {
   MEETING_TYPES,
@@ -38,7 +47,7 @@ type Seg = { id: number; startSec: number; durSec: number; status: SegStatus; te
 type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number };
 
 const GROQ_KEYS_URL = "https://console.groq.com/keys";
-const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type", brief: "mm-brief", terms: "mm-terms" };
+const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type", brief: "mm-brief", terms: "mm-terms", glossary: "mm-glossary" };
 const SILENCE_RMS = 0.0015; // 이보다 조용한 청크(약 100초)는 전사 생략
 const TEXT_CHUNK = 2800; // 회의록 작성 1회에 보낼 녹취록 글자 수 (Groq 무료: 요청당 약 8K 토큰)
 const TEXT_CHUNK_BRIEF = 4000; // 간결 모드는 출력이 짧아서 더 크게 → 호출 수·지시문 반복 감소
@@ -47,6 +56,11 @@ function whisperPrompt(title: string, terms: string): string {
   const s = [title.trim(), terms.trim()].filter(Boolean).join(". ");
   return s.length <= 200 ? s : s.slice(0, 200).replace(/[,.]?\s*[^,.]*$/, "");
 }
+/** 설정 표의 한 줄 (오인식 형태는 쉼표로 편집) */
+type GlossaryRow = { term: string; variants: string; desc: string };
+const toRows = (g: GlossaryEntry[]): GlossaryRow[] => g.map((e) => ({ ...e, variants: e.variants.join(", ") }));
+const fromRows = (rows: GlossaryRow[]): GlossaryEntry[] =>
+  normalizeGlossary(rows.map((r) => ({ ...r, variants: r.variants.split(/[,，]/) })));
 /** 교정 구간들을 합쳐 녹취록으로 (타임스탬프 앞은 빈 줄) */
 const joinFix = (parts: FixPart[]) => parts.map(applyFix).join("\n").replace(/\n+(?=\[\d{1,2}:\d{2})/g, "\n\n");
 const shortModel = (m: string) => m.replace(/^(openai|meta-llama|qwen)\//, "");
@@ -71,6 +85,20 @@ function lsSet(k: string, v: string) {
     localStorage.setItem(k, v);
   } catch {
     /* ignore */
+  }
+}
+/** 저장된 사전을 읽음. 없으면 예전 쉼표 사전(mm-terms)에서 옮겨 옴 */
+function loadGlossary(): GlossaryEntry[] {
+  const saved = lsGet(LS.glossary);
+  if (saved === null) {
+    const g = migrateTerms(lsGet(LS.terms) || "");
+    lsSet(LS.glossary, JSON.stringify(g));
+    return g;
+  }
+  try {
+    return parseGlossary(saved);
+  } catch {
+    return [];
   }
 }
 function download(name: string, blob: Blob) {
@@ -109,8 +137,8 @@ export default function Home() {
   const [dKey, setDKey] = useState("");
   const [dPw, setDPw] = useState("");
   const [dLang, setDLang] = useState("ko");
-  const [terms, setTerms] = useState(""); // 용어 사전 (쉼표 구분) → Whisper prompt·녹취록 교정
-  const [dTerms, setDTerms] = useState("");
+  const [glossary, setGlossary] = useState<GlossaryEntry[]>([]); // 용어 사전 → 자동 치환·Whisper prompt·AI 첨부
+  const [dGlossary, setDGlossary] = useState<GlossaryRow[]>([]);
   const [toast, setToast] = useState("");
   const [brief, setBrief] = useState(false);
   const sttFallbackShown = useRef(false);
@@ -130,6 +158,11 @@ export default function Home() {
   const [transcript, setTranscript] = useState("");
   const [preFix, setPreFix] = useState<string | null>(null); // 교정 전 녹취록 (되돌리기용)
   const [fixParts, setFixParts] = useState<FixPart[] | null>(null); // 교정 변경 내역 (항목별 되돌리기)
+  const [sel, setSel] = useState(""); // 녹취록에서 드래그로 선택한 단어
+  const [reg, setReg] = useState<{ variant: string; term: string; desc: string } | null>(null); // 사전 등록 입력창
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQ, setFindQ] = useState("");
+  const [replQ, setReplQ] = useState("");
   const editedRef = useRef(false);
   const [minutes, setMinutes] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -144,8 +177,8 @@ export default function Home() {
 
   // useCallback 안에서 최신 값을 읽기 위한 ref
   const openSettingsRef = useRef<(k?: boolean) => void>(() => {});
-  const cfg = useRef({ pw, lang, title, groqKey, terms });
-  cfg.current = { pw, lang, title, groqKey, terms };
+  const cfg = useRef({ pw, lang, title, groqKey, glossary });
+  cfg.current = { pw, lang, title, groqKey, glossary };
   // "(미정)", "미정", "-" 같은 자리채움 값은 빈칸으로 취급 → AI 자동 입력 대상
   const blank = (v: string) => (/^[\s(（\[]*(미정|없음|미상|tbd|todo|-|\?)?[\s)）\]]*$/i.test(v) ? "" : v.trim());
   const info = (): MeetingInfo => ({
@@ -166,7 +199,7 @@ export default function Home() {
     setLoaded(true);
     setLang(lsGet(LS.lang) || "ko");
     setAuthor(lsGet(LS.author) || "");
-    setTerms(lsGet(LS.terms) || "");
+    setGlossary(loadGlossary());
     const t = lsGet(LS.type);
     if (t === "agenda" || t === "external" || t === "weekly") setMtype(t);
     try {
@@ -188,7 +221,7 @@ export default function Home() {
     setDKey(groqKey);
     setDPw(pw);
     setDLang(lang);
-    setDTerms(terms);
+    setDGlossary(toRows(glossary));
   };
   const openSettings = (focusKey = false) => {
     loadDrafts();
@@ -200,7 +233,7 @@ export default function Home() {
     }, 60);
   };
   openSettingsRef.current = openSettings;
-  const dirty = dAuthor !== author || dKey !== groqKey || dPw !== pw || dLang !== lang || dTerms !== terms;
+  const dirty = dAuthor !== author || dKey !== groqKey || dPw !== pw || dLang !== lang || JSON.stringify(fromRows(dGlossary)) !== JSON.stringify(glossary);
   const keyBad = !!dKey.trim() && !KEY_RE.test(dKey.trim());
   const saveSettings = () => {
     if (keyBad) {
@@ -217,16 +250,37 @@ export default function Home() {
     lsSet(LS.key, k);
     lsSet(LS.pw, dPw);
     lsSet(LS.lang, dLang);
-    const t = parseParticipants(dTerms).join(", ");
-    setTerms(t);
-    setDTerms(t);
-    lsSet(LS.terms, t);
+    const g = fromRows(dGlossary);
+    saveGlossary(g);
+    setDGlossary(toRows(g));
     setSettingsOpen(false);
     setError("");
     const who = a ? `${a}님` : "설정";
     const mode = k ? "내 키로 사용" : dPw ? "공용 키(비밀번호)로 사용" : "키 없음";
-    setToast(`저장됐어요 · ${who} · ${mode}`);
+    flash(`저장됐어요 · ${who} · ${mode}`);
+  };
+  const flash = (msg: string) => {
+    setToast(msg);
     setTimeout(() => setToast(""), 2600);
+  };
+  const saveGlossary = (g: GlossaryEntry[]) => {
+    setGlossary(g);
+    lsSet(LS.glossary, JSON.stringify(g));
+  };
+  const setRow = (i: number, p: Partial<GlossaryRow>) =>
+    setDGlossary((rows) => rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const exportGlossary = () =>
+    download("용어사전.json", new Blob([JSON.stringify(fromRows(dGlossary), null, 2)], { type: "application/json" }));
+  /** 가져온 항목은 표에 합침 (같은 용어는 오인식 형태를 합치고 설명은 파일 값 우선). 저장을 눌러야 적용 */
+  const importGlossary = async (f: File | undefined) => {
+    if (!f) return;
+    try {
+      const g = parseGlossary(await f.text());
+      setDGlossary((rows) => toRows(normalizeGlossary([...fromRows(rows), ...g])));
+      flash(`${g.length}개 항목을 가져왔어요. 저장을 눌러야 적용돼요.`);
+    } catch (e) {
+      flash(`가져오지 못했어요: ${(e as Error).message}`);
+    }
   };
 
   /* ----- 세그먼트 상태 관리 ----- */
@@ -332,11 +386,11 @@ export default function Home() {
         const fd = new FormData();
         fd.append("file", encodeWav(pcm), "chunk.wav");
         // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목 + 용어 사전만 힌트로
-        fd.append("prompt", whisperPrompt(cfg.current.title, cfg.current.terms));
+        fd.append("prompt", whisperPrompt(cfg.current.title, cfg.current.glossary.map((e) => e.term).join(", ")));
         fd.append("language", cfg.current.lang);
         try {
           const data = await callApi("/api/transcribe", { method: "POST", body: fd });
-          const cleaned = cleanTranscript(data.text || "");
+          const cleaned = applyGlossary(cleanTranscript(data.text || ""), cfg.current.glossary).text;
           patch(next.id, {
             status: "done",
             text: data.suspect ? (cleaned ? `${cleaned} (※ 인식 불확실 구간)` : "(※ 인식 불확실 구간)") : cleaned,
@@ -513,17 +567,25 @@ export default function Home() {
     const orig = transcript;
     if (!orig.trim()) return;
     setError("");
-    const ctxBase = { ...info(), dateLabel: dateLabel(date), terms: parseParticipants(terms) } as PromptCtx;
+    const ctxBase = { ...info(), dateLabel: dateLabel(date) } as PromptCtx;
     try {
       const parts = splitText(orig, TEXT_CHUNK);
       const out: FixPart[] = [];
       let rejected = 0;
+      let asked = 0;
       for (let i = 0; i < parts.length; i++) {
         setBusy(`녹취록 교정 중… ${Math.round((i / parts.length) * 100)}%`);
+        // 사전에 있는 용어로만 교정하므로, 관련 항목이 없는 구간은 AI를 부르지 않음 (한도 절약 + 추측 교정 방지)
+        const ref = glossaryContext(findGlossary(parts[i], glossary));
+        if (!ref) {
+          out.push(wordDiff(parts[i], parts[i]));
+          continue;
+        }
+        asked++;
         const data = await callApi("/api/summarize", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stage: "fix", text: parts[i], ctx: { ...ctxBase, part: i + 1, total: parts.length } }),
+          body: JSON.stringify({ stage: "fix", text: parts[i], ctx: { ...ctxBase, part: i + 1, total: parts.length, glossary: ref } }),
         });
         const fixed = String(data.content || "").trim();
         // 잘림·생략 표시·길이 ±10% 초과·유사도 85% 미만·타임스탬프 변경 → 그 구간은 원문 유지
@@ -534,7 +596,7 @@ export default function Home() {
       const n = out.reduce((k, p) => k + p.hunks.length, 0);
       const skip = rejected ? ` · ${rejected}개 구간은 변경이 커서 원문 유지` : "";
       if (!n) {
-        setNotice(`바뀐 부분이 없어요${skip}.`);
+        setNotice(asked ? `바뀐 부분이 없어요${skip}.` : "녹취록과 관련된 용어가 사전에 없어서 교정할 부분이 없어요. 설정에서 용어 사전을 채워 주세요.");
         return;
       }
       editedRef.current = true;
@@ -595,6 +657,7 @@ export default function Home() {
           // 바로 앞 주제만 이어쓰기 후보로 줌 (예전 주제를 재사용해 순서가 뒤섞이는 것 방지)
           prevTitles: all.length ? [all[all.length - 1].title] : [],
           knownTerms: meta.terms.map((t) => t[0]),
+          glossary: glossaryContext(findGlossary(parts[i], glossary)),
         });
         const r = parseBody(raw);
         all.push(...r.sections);
@@ -607,7 +670,7 @@ export default function Home() {
       const needPeople = !mi.participants.length;
       // 참석자 후보: 녹취에서 "OO님"으로 불린 이름만, 용어 사전·주요 용어는 제외
       const cands = needPeople
-        ? speakerCandidates(sections, text, [...parseParticipants(terms), ...meta.terms.map((t) => t[0])])
+        ? speakerCandidates(sections, text, [...glossary.map((e) => e.term), ...meta.terms.map((t) => t[0])])
         : undefined;
       let frame = "";
       try {
@@ -650,6 +713,37 @@ export default function Home() {
       setBusy("");
       setWaitMsg("");
     }
+  };
+
+  /** 녹취록 일괄 변경 (찾아 바꾸기·사전 등록). 전사 중이면 구간 텍스트에도 적용해야 덮어써지지 않음 */
+  const rewrite = (fn: (t: string) => string) => {
+    if (pending === 0) setPreFix((p) => p ?? transcript);
+    commit(segsRef.current.map((s) => ({ ...s, text: fn(s.text) })));
+    setFixParts(null);
+    setTranscript(fn);
+  };
+  const findCount = findQ ? transcript.split(findQ).length - 1 : 0;
+  const replaceAll = () => {
+    if (!findCount) return;
+    rewrite((t) => t.split(findQ).join(replQ));
+    flash(`${findCount}곳을 바꿨어요.`);
+  };
+  /** 드래그 선택 → 사전 등록 + 지금 녹취록에 바로 적용 (이번에 등록한 형태만. 다른 용어는 보호) */
+  const registerEntry = () => {
+    const term = reg?.term.trim();
+    if (!reg || !term) return;
+    const entry = { term, variants: [reg.variant], desc: reg.desc };
+    const next = normalizeGlossary([...glossary, entry]);
+    saveGlossary(next);
+    // 설정이 열려 있으면 표에도 반영 (안 그러면 설정 저장 때 덮어써짐)
+    if (settingsOpen) setDGlossary((rows) => toRows(normalizeGlossary([...fromRows(rows), entry])));
+    const key = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+    const scoped = next.map((e) => ({ ...e, variants: key(e.term) === key(term) ? [reg.variant.trim()] : [] }));
+    const { count } = applyGlossary(transcript, scoped);
+    if (count) rewrite((t) => applyGlossary(t, scoped).text);
+    flash(`사전에 등록했어요${count ? ` · ${count}곳 적용` : ""}.`);
+    setReg(null);
+    setSel("");
   };
 
   const totalSec = segs.reduce((n, s) => n + s.durSec, 0);
@@ -832,17 +926,48 @@ export default function Home() {
                 </select>
               </label>
             </div>
-            <label className="field mt">
-              <span>용어 사전 (쉼표 구분)</span>
-              <input
-                value={dTerms}
-                onChange={(e) => setDTerms(e.target.value)}
-                placeholder="예: 아크릴, GPUBASE, 아크릴 넥스트, 모듈장, R&R"
-                autoComplete="off"
-                enterKeyHint="done"
-              />
-              <small className="muted">받아쓰기 힌트와 녹취록 교정에 사용해요. 회사·제품·사람 이름을 넣으면 정확도가 올라가요.</small>
-            </label>
+            <div className="field mt">
+              <span>용어 사전 ({dGlossary.length})</span>
+              <div className="gloss">
+                <div className="gloss-row gloss-head" aria-hidden>
+                  <span>용어</span>
+                  <span>오인식 형태 (쉼표 구분)</span>
+                  <span>설명</span>
+                  <span />
+                </div>
+                {dGlossary.map((r, i) => (
+                  <div className="gloss-row" key={i}>
+                    <input aria-label="용어" value={r.term} onChange={(e) => setRow(i, { term: e.target.value })} autoComplete="off" />
+                    <input aria-label="오인식 형태" value={r.variants} onChange={(e) => setRow(i, { variants: e.target.value })} autoComplete="off" />
+                    <input aria-label="설명" value={r.desc} onChange={(e) => setRow(i, { desc: e.target.value })} autoComplete="off" />
+                    <button type="button" className="x" aria-label="항목 삭제" onClick={() => setDGlossary((rows) => rows.filter((_, j) => j !== i))}>
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="gloss-btns">
+                <button type="button" className="btn sm" onClick={() => setDGlossary((rows) => [...rows, { term: "", variants: "", desc: "" }])}>
+                  + 항목 추가
+                </button>
+                <button type="button" className="btn ghost sm" disabled={!dGlossary.length} onClick={exportGlossary}>
+                  JSON 내보내기
+                </button>
+                <label className="btn ghost sm">
+                  JSON 가져오기
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    hidden
+                    onChange={(e) => {
+                      importGlossary(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+              <small className="muted">오인식 형태는 받아쓰기 직후 용어로 자동 치환돼요. 회의록·교정 때는 구간과 관련된 항목만 AI에 함께 보내요.</small>
+            </div>
             <div className="field keyfield mt">
               <span>
                 내 Groq API 키 (무료) ·{" "}
@@ -1049,11 +1174,22 @@ export default function Home() {
             <h2>녹취록</h2>
             <span className="muted">{transcript.length.toLocaleString()}자 · 직접 수정 가능</span>
             <span className="headbtns">
-              {preFix !== null && !busy && (
-                <button className="btn ghost sm" onClick={undoFix} title="교정 전 녹취록으로 되돌리기">
+              {preFix !== null && !busy && pending === 0 && (
+                <button className="btn ghost sm" onClick={undoFix} title="변경 전 녹취록으로 되돌리기">
                   되돌리기
                 </button>
               )}
+              <button
+                className="btn ghost sm"
+                disabled={!sel}
+                onClick={() => setReg({ variant: sel, term: sel, desc: "" })}
+                title="녹취록에서 단어를 드래그해 선택하면 켜져요"
+              >
+                사전에 등록
+              </button>
+              <button className="btn ghost sm" disabled={pending > 0} onClick={() => setFindOpen((v) => !v)}>
+                찾아 바꾸기
+              </button>
               <button
                 className="btn sm"
                 disabled={!canSummarize}
@@ -1064,10 +1200,50 @@ export default function Home() {
               </button>
             </span>
           </div>
+          {findOpen && (
+            <form
+              className="tools"
+              onSubmit={(e) => {
+                e.preventDefault();
+                replaceAll();
+              }}
+            >
+              <input aria-label="찾을 말" value={findQ} onChange={(e) => setFindQ(e.target.value)} placeholder="찾을 말" autoComplete="off" />
+              <input aria-label="바꿀 말" value={replQ} onChange={(e) => setReplQ(e.target.value)} placeholder="바꿀 말" autoComplete="off" />
+              <span className="muted">{findCount}곳</span>
+              <button type="submit" className="btn sm" disabled={!findCount || pending > 0}>
+                모두 바꾸기
+              </button>
+            </form>
+          )}
+          {reg && (
+            <form
+              className="tools"
+              onSubmit={(e) => {
+                e.preventDefault();
+                registerEntry();
+              }}
+            >
+              <input aria-label="오인식 형태" value={reg.variant} onChange={(e) => setReg({ ...reg, variant: e.target.value })} placeholder="오인식 형태" autoComplete="off" />
+              <input aria-label="용어" value={reg.term} onChange={(e) => setReg({ ...reg, term: e.target.value })} placeholder="올바른 용어" autoComplete="off" autoFocus onFocus={(e) => e.target.select()} />
+              <input aria-label="설명" value={reg.desc} onChange={(e) => setReg({ ...reg, desc: e.target.value })} placeholder="설명 (선택)" autoComplete="off" />
+              <button type="submit" className="btn primary sm" disabled={!reg.term.trim()}>
+                등록
+              </button>
+              <button type="button" className="btn ghost sm" onClick={() => setReg(null)}>
+                취소
+              </button>
+            </form>
+          )}
           <textarea
             className="transcript"
             value={transcript}
             readOnly={pending > 0 || recState !== "idle"}
+            onSelect={(e) => {
+              const el = e.currentTarget;
+              const s = el.value.slice(el.selectionStart, el.selectionEnd).trim();
+              setSel(s.length <= 40 && !s.includes("\n") ? s : "");
+            }}
             onChange={(e) => {
               editedRef.current = true;
               setFixParts(null); // 직접 고치면 항목별 되돌리기 목록은 닫음 (전체 되돌리기는 유지)

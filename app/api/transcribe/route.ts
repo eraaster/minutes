@@ -8,7 +8,7 @@ export const maxDuration = 60;
 /**
  * POST multipart/form-data
  *  - file: audio/wav 청크 (클라이언트에서 16kHz mono, 90~110초 단위로 잘라서 보냄 → 4.5MB 제한 회피)
- *  - prompt: 회의 제목 + 용어 사전 (200자 이내, 선택). 앞 구간 전사문은 넣지 않음
+ *  - prompt: 회의 제목 + 사전의 용어 이름들 (200자 이내, 선택). 앞 구간 전사문은 넣지 않음
  *  - language: "ko" | "auto"
  */
 export async function POST(req: Request) {

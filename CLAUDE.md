@@ -17,13 +17,21 @@
 - `lib/audio.ts` — 마이크 녹음(AudioWorklet), 16kHz mono 리샘플, 90~110초 사이 가장 조용한 지점(50ms 창 RMS 최소)에서 WAV 청크 분할(Vercel 4.5MB 요청 한도 회피). 녹음(`MicRecorder`)·업로드(`splitToChunks`) 공통
 - `lib/minutes.ts`의 `groupMinorSections`(안건 6개 초과 시 짧은 안건을 "기타 공지 및 논의"로), `verifyDeadlines`(기한 열을 녹취록과 대조), `verifyBodyDates`(본문 날짜·연도·월을 녹취록과 대조, 근거 없으면 "(날짜 미정)"/연도 삭제), `speakerCandidates`(녹취에서 "OO님"으로 불린 이름만, 용어 사전·역할 단어 제외)
 - `lib/text.ts` — 환각 문구·반복 제거(`cleanTranscript`, `repetitionScore`), 텍스트 분할, 마크다운 렌더러(`mdToHtml`)
+- `lib/glossary.ts` — 용어 사전: 정리·마이그레이션(`normalizeGlossary`, `migrateTerms`, `parseGlossary`), 자동 치환(`applyGlossary`), 문맥 검색(`findGlossary`), AI 첨부문(`glossaryContext`). 테스트 `lib/glossary.test.ts`
 - `lib/prompts.ts` — AI 지시문 (상세 모드 / 간결 모드)
 - `lib/minutes.ts` — AI 응답 파싱, 주제 병합, 최종 양식 조립(`assemble`)
 - `lib/server.ts` — 인증(사용자 키 `x-groq-key` 또는 `APP_PASSWORD`), Groq 에러 전달
 
+## 용어 사전
+- 항목 = `{ term, variants, desc }`, localStorage `mm-glossary`. 예전 쉼표 사전 `mm-terms`는 첫 로드 때 옮겨 옴(원본은 남겨 둠). 설정 표에서 편집, JSON 내보내기/가져오기(가져오기는 병합, 같은 용어의 설명은 파일 값 우선)
+- 자동 치환: 전사 구간마다 `cleanTranscript` 다음 `applyGlossary`. 긴 것부터 한 번의 패스. 용어 자신도 패턴에 넣어 이미 맞게 쓴 용어를 다시 치환하지 않음. 앞쪽 경계를 막아 "장품"이 "화장품"에 걸리지 않음, 영문·숫자는 양쪽 경계. 한 글자 오인식 형태는 저장 안 함
+- 녹취록 드래그 선택 → "사전에 등록"(그 형태만 현재 녹취록에 즉시 적용), "찾아 바꾸기". 둘 다 "되돌리기" 가능
+- 문맥 검색 `findGlossary`: 정확 일치 > 후보, 최대 15개. 후보 = 2~6글자 한글 단어(조사 뗀 형태 포함)와 자모 유사도 0.75 이상. 유사도 = 2·가중 LCS / 가중 길이 합(받침 가중치 0.5). 일반 Levenshtein은 트러그→트러블(0.71)·아크네스→아크릴 넥스트(0.57)를 못 잡음
+- 첨부: `fix`·`body` 요청의 `ctx.glossary`에 "[참고 용어 사전]"으로 찾은 항목만, 구간당 600자 이내(`CONTEXT_MAX`, 서버에서도 자름). 후보는 "발음이 비슷해 이 용어일 수 있음" 표시
+
 ## 받아쓰기·교정
-- Whisper prompt = 회의 제목 + 용어 사전(설정, localStorage `mm-terms`), 200자 이내
-- "녹취록 교정" 버튼: 2,800자 구간마다 `fix` 호출, 발음이 비슷한 오인식만 수정(temperature 0). 구간별 안전장치(`rejectFix`, lib/text.ts): 잘림·생략 표시 추가·길이 0.9~1.1 밖·문자 유사도 0.85 미만·타임스탬프 변경 시 원문 유지. 단어 단위 diff(`wordDiff`)로 "바뀐 부분 N곳" 목록 + 항목별 되돌리기, "되돌리기"로 전체 복구
+- Whisper prompt = 회의 제목 + 사전의 용어 이름들, 200자 이내
+- "녹취록 교정" 버튼: 2,800자 구간마다 `fix` 호출, 사전에 있는 용어의 오인식만 수정(temperature 0). 사전에 없는 단어는 추측 교정 금지(부들량→부드러움, 장품→장비 등). 관련 사전 항목이 없는 구간은 AI를 호출하지 않음. 구간별 안전장치(`rejectFix`, lib/text.ts): 잘림·생략 표시 추가·길이 0.9~1.1 밖·문자 유사도 0.85 미만·타임스탬프 변경 시 원문 유지. 단어 단위 diff(`wordDiff`)로 "바뀐 부분 N곳" 목록 + 항목별 되돌리기, "되돌리기"로 전체 복구
 - 429 대기가 20초 미만이면 조용히 재시도, 20초 이상만 "잠시 대기 중… N초" 표시
 
 ## 회의록 생성 흐름
@@ -40,7 +48,7 @@
 - 사용자는 한국어, 기술 용어는 영어 유지
 
 ## 작업 방법
-- 수정 후 `npm run build`로 타입/빌드 확인 (Node가 PATH에 없으면 `C:\Program Files\nodejs` 사용)
+- 수정 후 `npm test`(Node 내장 test runner, 외부 의존성 없음)와 `npm run build`로 확인 (Node가 PATH에 없으면 `C:\Program Files\nodejs` 사용)
 - 커밋 작성자 이메일은 이 폴더 git config(`eraaster@naver.com`) 사용 — 회사 메일로 커밋하면 Vercel이 배포를 Blocked 처리함
 - `git push` → Vercel 자동 배포 → Deployments에서 Ready 확인
 - 비밀 값(`.env.local`, Groq 키)은 절대 커밋하지 말 것
