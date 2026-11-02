@@ -24,6 +24,7 @@ export type MeetingInfo = {
   author: string;
   type: MeetingType;
   participantsGuessed?: boolean;
+  models?: string[]; // 실제로 쓴 모델 (각주용)
 };
 
 /** 서버(프롬프트)로 넘기는 문맥 */
@@ -40,6 +41,7 @@ export type PromptCtx = {
   knownTerms?: string[];
   needTitle?: boolean;
   needPeople?: boolean;
+  brief?: boolean; // 간결 모드 (토큰 절약)
 };
 
 export type Section = { title: string; content: string };
@@ -333,7 +335,8 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
   out.push(
     "",
     "---",
-    "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요."
+    "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요." +
+      (info.models?.length ? ` (작성 모델: ${info.models.join(", ")})` : "")
   );
   return out.join("\n") + "\n";
 }

@@ -10,6 +10,7 @@ type Body = { stage: Stage; text: string; ctx: PromptCtx };
 
 // 요청당 (입력 + 출력) 토큰이 Groq 무료 TPM(8K) 안에 들어가도록
 const MAX_OUT: Record<Stage, number> = { body: 3200, frame: 2500 };
+const BRIEF_OUT: Record<Stage, number> = { body: 1500, frame: 1500 };
 const MAX_IN_CHARS = 7000;
 
 export async function POST(req: Request) {
@@ -43,11 +44,12 @@ export async function POST(req: Request) {
   // 모델별로 무료 한도가 따로 있음 → 한도 초과·모델 없음이면 다음 모델로
   let last: Response | null = null;
   let lastMsg = "";
-  for (const model of modelList()) {
+  const models = modelList();
+  for (const model of models) {
     const payload: Record<string, unknown> = {
       model,
       temperature: 0.2,
-      max_completion_tokens: MAX_OUT[body.stage],
+      max_completion_tokens: ctx.brief ? BRIEF_OUT[body.stage] : MAX_OUT[body.stage],
       messages,
     };
     // gpt-oss는 reasoning 모델 → 추론 토큰도 한도를 먹으므로 낮게
@@ -73,6 +75,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         content,
         model,
+        fallbackFrom: model !== models[0] ? models[0] : undefined,
         truncated: data?.choices?.[0]?.finish_reason === "length",
       });
     }

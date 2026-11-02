@@ -48,7 +48,11 @@ export async function POST(req: Request) {
     });
     if (res.ok) {
       const data = (await res.json()) as { text?: string };
-      return NextResponse.json({ text: (data.text || "").trim(), model });
+      return NextResponse.json({
+        text: (data.text || "").trim(),
+        model,
+        fallbackFrom: model !== models[0] ? models[0] : undefined,
+      });
     }
     const msg = await res
       .clone()

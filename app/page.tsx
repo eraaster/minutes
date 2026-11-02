@@ -36,9 +36,11 @@ type Seg = { id: number; startSec: number; durSec: number; status: SegStatus; te
 type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number };
 
 const GROQ_KEYS_URL = "https://console.groq.com/keys";
-const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type" };
+const LS = { key: "mm-groq-key", pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type", brief: "mm-brief" };
 const SILENCE_RMS = 0.0015; // 이보다 조용한 100초 구간은 전사 생략
 const TEXT_CHUNK = 2800; // 회의록 작성 1회에 보낼 녹취록 글자 수 (Groq 무료: 요청당 약 8K 토큰)
+const TEXT_CHUNK_BRIEF = 4000; // 간결 모드는 출력이 짧아서 더 크게 → 호출 수·지시문 반복 감소
+const shortModel = (m: string) => m.replace(/^(openai|meta-llama|qwen)\//, "");
 
 class AuthError extends Error {}
 
@@ -99,6 +101,8 @@ export default function Home() {
   const [dPw, setDPw] = useState("");
   const [dLang, setDLang] = useState("ko");
   const [toast, setToast] = useState("");
+  const [brief, setBrief] = useState(false);
+  const sttFallbackShown = useRef(false);
   const [loaded, setLoaded] = useState(false);
 
   const [segs, setSegs] = useState<Seg[]>([]);
@@ -143,6 +147,7 @@ export default function Home() {
   useEffect(() => {
     setPw(lsGet(LS.pw) || "");
     setGroqKey(lsGet(LS.key) || "");
+    setBrief(lsGet(LS.brief) === "1");
     setLoaded(true);
     setLang(lsGet(LS.lang) || "ko");
     setAuthor(lsGet(LS.author) || "");
@@ -289,6 +294,12 @@ export default function Home() {
         try {
           const data = await callApi("/api/transcribe", { method: "POST", body: fd });
           patch(next.id, { status: "done", text: cleanTranscript(data.text || "") });
+          if (data.fallbackFrom && !sttFallbackShown.current) {
+            sttFallbackShown.current = true;
+            setNotice(
+              `받아쓰기 모델 한도가 차서 ${shortModel(data.fallbackFrom)} → ${shortModel(data.model)}로 바꿔서 진행 중이에요. (정확도가 조금 낮을 수 있어요)`
+            );
+          }
         } catch (e) {
           if (e instanceof AuthError) {
             patch(next.id, { status: "queued" });
@@ -438,16 +449,28 @@ export default function Home() {
     });
     const c = (data.content || "").trim();
     if (!c) throw new Error("AI 응답이 비어 있습니다. 다시 시도해 주세요.");
+    if (data.model) usedModels.current.add(String(data.model));
+    if (data.fallbackFrom && !llmFallback.current) {
+      llmFallback.current = String(data.fallbackFrom);
+      setNotice(
+        `${shortModel(data.fallbackFrom)} 무료 한도가 차서 ${shortModel(data.model)} 모델로 넘어갔어요. 글 스타일이 조금 다를 수 있어요.`
+      );
+    }
     return c as string;
   };
+  const usedModels = useRef<Set<string>>(new Set());
+  const llmFallback = useRef("");
 
   const makeMinutes = async () => {
     const text = transcript.trim();
     if (!text) return;
     setError("");
     setMinutes("");
+    usedModels.current = new Set();
+    llmFallback.current = "";
     const mi = info();
     const base = {
+      brief,
       title: mi.title,
       dateLabel: dateLabel(mi.date),
       time: mi.time,
@@ -456,7 +479,7 @@ export default function Home() {
       type: mi.type,
     };
     try {
-      const parts = splitText(text, TEXT_CHUNK);
+      const parts = splitText(text, brief ? TEXT_CHUNK_BRIEF : TEXT_CHUNK);
       const all: Section[] = [];
       const meta = emptyMeta();
       for (let i = 0; i < parts.length; i++) {
@@ -490,7 +513,15 @@ export default function Home() {
       if (needTitle && fin.title) setTitle(fin.title);
       if (needPeople && fin.participants.length) setPeople(fin.participants.join(", "));
 
+      fin.models = [...usedModels.current].map(shortModel);
       const full = assemble(fin, sections, meta, frame);
+      if (llmFallback.current) {
+        setNotice(
+          `일부 구간은 ${shortModel(llmFallback.current)} 한도 초과로 다른 모델(${fin.models
+            .filter((m) => m !== shortModel(llmFallback.current))
+            .join(", ")})이 작성했어요. 회의록 맨 아래에 사용한 모델이 적혀 있어요.`
+        );
+      }
       setMinutes(full);
 
       const item: HistoryItem = {
@@ -523,6 +554,7 @@ export default function Home() {
     editedRef.current = false;
     setTranscript("");
     setMinutes("");
+    sttFallbackShown.current = false;
     setTitle("");
     setTime("");
     setPlace("");
@@ -902,6 +934,17 @@ export default function Home() {
                 녹음 파일 .wav
               </button>
             )}
+            <label className="toggle" title="지시문과 출력을 짧게 해서 무료 한도를 아껴요">
+              <input
+                type="checkbox"
+                checked={brief}
+                onChange={(e) => {
+                  setBrief(e.target.checked);
+                  lsSet(LS.brief, e.target.checked ? "1" : "0");
+                }}
+              />
+              <span>간결 모드 (토큰 절약)</span>
+            </label>
             <button className="btn primary" disabled={!canSummarize} onClick={makeMinutes}>
               {minutes ? "회의록 다시 만들기" : "회의록 만들기"}
             </button>
