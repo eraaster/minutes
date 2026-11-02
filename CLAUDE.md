@@ -11,7 +11,13 @@
 - 무료 티어 전제: 요청 1회당 약 8K 토큰 이하가 되도록 쪼개서 보냄
 
 ## 파일 구조
-- `app/page.tsx` — 화면 전체 + 녹음/업로드 → 전사 큐 → 회의록 생성 파이프라인 (클라이언트)
+- `app/layout.tsx` → `components/Shell.tsx` — 공통 헤더(탭·사용자 칩), 토스트, 계정 패널, 푸터. **작성 화면(`Composer`)을 항상 마운트해 두고 `/`가 아닐 때 숨김만 함** (언마운트하면 진행 중인 녹음·받아쓰기가 끊김). 그래서 `app/page.tsx`는 비어 있음
+- `components/Composer.tsx` — 작성 화면: 녹음/업로드 → 전사 큐 → 회의록 생성 파이프라인, 드래그 선택 → 사전 등록 팝오버, 찾아 바꾸기
+- `components/AccountPanel.tsx` — 계정 설정 (PC 오른쪽 슬라이드, 모바일 아래 시트). 이름·Groq 키·비밀번호·인식 언어
+- `components/TagInput.tsx` — 태그 입력 (Enter·쉼표로 추가, 한글 조합 중 Enter 무시)
+- `app/glossary/page.tsx` — 용어 사전 (추가·검색·수정·삭제, PC 표/모바일 카드, JSON 가져오기·내보내기, 예시로 시작하기)
+- `app/history/page.tsx` — 지난 회의록 (제목 검색, 열기 → 작성 화면에 불러오기, 삭제)
+- `lib/store.ts` — 화면 간 공유 상태 훅 `useStore` (계정·사전·기록·토스트·작성 화면 진행 상황), localStorage 읽기/쓰기. 키 이름은 예전 그대로
 - `app/api/transcribe/route.ts` — Whisper 프록시. 반복 환각 감지 시 temperature 올려 1회 재시도, `suspect` 플래그
 - `app/api/summarize/route.ts` — LLM 프록시. stage `body` / `frame` / `fix`(녹취록 교정), 모델 폴백, `fallbackFrom` 반환
 - `lib/audio.ts` — 마이크 녹음(AudioWorklet), 16kHz mono 리샘플, 90~110초 사이 가장 조용한 지점(50ms 창 RMS 최소)에서 WAV 청크 분할(Vercel 4.5MB 요청 한도 회피). 녹음(`MicRecorder`)·업로드(`splitToChunks`) 공통
@@ -23,7 +29,7 @@
 - `lib/server.ts` — 인증(사용자 키 `x-groq-key` 또는 `APP_PASSWORD`), Groq 에러 전달
 
 ## 용어 사전
-- 항목 = `{ term, variants, desc }`, localStorage `mm-glossary`. 예전 쉼표 사전 `mm-terms`는 첫 로드 때 옮겨 옴(원본은 남겨 둠). 설정 표에서 편집, JSON 내보내기/가져오기(가져오기는 병합, 같은 용어의 설명은 파일 값 우선)
+- 항목 = `{ term, variants, desc }`, localStorage `mm-glossary`. 예전 쉼표 사전 `mm-terms`는 첫 로드 때 옮겨 옴(원본은 남겨 둠). `/glossary`에서 편집, JSON 내보내기/가져오기(가져오기는 바로 병합, 같은 용어의 설명은 파일 값 우선)
 - 자동 치환: 전사 구간마다 `cleanTranscript` 다음 `applyGlossary`. 긴 것부터 한 번의 패스. 용어 자신도 패턴에 넣어 이미 맞게 쓴 용어를 다시 치환하지 않음. 앞쪽 경계를 막아 "장품"이 "화장품"에 걸리지 않음, 영문·숫자는 양쪽 경계. 한 글자 오인식 형태는 저장 안 함
 - 녹취록 드래그 선택 → "사전에 등록"(그 형태만 현재 녹취록에 즉시 적용), "찾아 바꾸기". 둘 다 "되돌리기" 가능
 - 문맥 검색 `findGlossary`: 정확 일치 > 후보, 최대 15개. 후보 = 2~6글자 한글 단어(조사 뗀 형태 포함)와 자모 유사도 0.75 이상. 유사도 = 2·가중 LCS / 가중 길이 합(받침 가중치 0.5). 일반 Levenshtein은 트러그→트러블(0.71)·아크네스→아크릴 넥스트(0.57)를 못 잡음
