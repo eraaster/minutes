@@ -311,14 +311,19 @@ export default function Home() {
           continue;
         }
         patch(next.id, { status: "working" });
-        const prev = [...segsRef.current].reverse().find((s) => s.id < next.id && s.status === "done" && s.text);
+
         const fd = new FormData();
         fd.append("file", encodeWav(pcm), "chunk.wav");
-        fd.append("prompt", prev ? prev.text.slice(-150) : cfg.current.title);
+        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목만 힌트로
+        fd.append("prompt", cfg.current.title);
         fd.append("language", cfg.current.lang);
         try {
           const data = await callApi("/api/transcribe", { method: "POST", body: fd });
-          patch(next.id, { status: "done", text: cleanTranscript(data.text || "") });
+          const cleaned = cleanTranscript(data.text || "");
+          patch(next.id, {
+            status: "done",
+            text: data.suspect ? (cleaned ? `${cleaned} (※ 인식 불확실 구간)` : "(※ 인식 불확실 구간)") : cleaned,
+          });
           if (data.fallbackFrom && !sttFallbackShown.current) {
             sttFallbackShown.current = true;
             setNotice(

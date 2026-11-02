@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { GROQ_BASE, NO_KEY_MSG, checkAuth, forwardGroqError, getKey } from "@/lib/server";
+import { repetitionScore } from "@/lib/text";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -31,26 +32,40 @@ export async function POST(req: Request) {
   const primary = process.env.GROQ_STT_MODEL || "whisper-large-v3";
   const models = [...new Set([primary, "whisper-large-v3", "whisper-large-v3-turbo"])];
 
-  let last: Response | null = null;
-  for (const model of models) {
+  const call = (model: string, temperature: number, withPrompt: boolean) => {
     const out = new FormData();
     out.append("file", file, "chunk.wav");
     out.append("model", model);
     out.append("response_format", "json");
-    out.append("temperature", "0");
+    out.append("temperature", String(temperature));
     if (language !== "auto") out.append("language", language);
-    if (prompt) out.append("prompt", prompt);
-
-    const res = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
+    if (withPrompt && prompt) out.append("prompt", prompt);
+    return fetch(`${GROQ_BASE}/audio/transcriptions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: out,
     });
+  };
+
+  let last: Response | null = null;
+  for (const model of models) {
+    const res = await call(model, 0, true);
     if (res.ok) {
-      const data = (await res.json()) as { text?: string };
+      let text = String(((await res.json()) as { text?: string }).text || "").trim();
+      let suspect = false;
+      // 같은 문장이 반복되는 환각이면 설정을 바꿔 한 번 더 (temperature↑, 힌트 없이)
+      if (repetitionScore(text) > 0.5) {
+        const retry = await call(model, 0.4, false).catch(() => null);
+        if (retry?.ok) {
+          const t2 = String(((await retry.json()) as { text?: string }).text || "").trim();
+          if (repetitionScore(t2) < repetitionScore(text)) text = t2;
+        }
+        suspect = repetitionScore(text) > 0.5;
+      }
       return NextResponse.json({
-        text: (data.text || "").trim(),
+        text,
         model,
+        suspect,
         fallbackFrom: model !== models[0] ? models[0] : undefined,
       });
     }

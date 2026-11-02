@@ -7,17 +7,37 @@ const HALLUCINATIONS: RegExp[] = [
   /다음\s*영상에서\s*(만나요|뵙겠습니다)[.!]?/g,
 ];
 
+function sentencesOf(t: string): string[] {
+  return (t.match(/[^.?!。\n]+[.?!。]?/g) || []).map((x) => x.trim()).filter(Boolean);
+}
+
+/** 반복 환각 정도 (0~1). 같은 문장이 많이 반복될수록 높음 */
+export function repetitionScore(text: string): number {
+  const ss = sentencesOf(text).map((x) => x.replace(/\s+/g, ""));
+  if (ss.length < 6) {
+    // 짧아도 같은 구절이 3번 넘게 이어지면 루프
+    return /(.{4,40}?)(\s*\1){3,}/.test(text) ? 1 : 0;
+  }
+  const uniq = new Set(ss).size;
+  return 1 - uniq / ss.length;
+}
+
 export function cleanTranscript(text: string): string {
   let t = text;
   for (const re of HALLUCINATIONS) t = t.replace(re, " ");
-  // 같은 문장이 반복되는 루프 현상 제거
-  const sentences = t.match(/[^.?!。\n]+[.?!。]?/g) || [];
+  // 같은 구절이 붙어서 반복되는 루프 ("수준의 수준의 수준의…") 하나로 줄이기
+  // (숫자 "1,000,000,000" 같은 건 건드리지 않도록 글자로 시작하고 공백으로 끝나는 단위만)
+  t = t.replace(/([가-힣A-Za-z][^.?!\n]{0,38}?\s+)\1{2,}/g, "$1");
+  const count = new Map<string, number>();
   const out: string[] = [];
-  for (const s of sentences) {
-    const trimmed = s.trim();
-    if (!trimmed) continue;
-    if (out.length && out[out.length - 1] === trimmed) continue;
-    out.push(trimmed);
+  for (const s of sentencesOf(t)) {
+    const k = s.replace(/\s+/g, "");
+    // 의미 없는 짧은 조각 ("Q.", "O. N.") 제거
+    if (!/[가-힣]/.test(k) && k.replace(/[^A-Za-z0-9]/g, "").length <= 2) continue;
+    const n = (count.get(k) || 0) + 1;
+    count.set(k, n);
+    if (n > 1) continue; // 같은 문장은 구간 안에서 한 번만
+    out.push(s);
   }
   return out.join(" ").replace(/\s+/g, " ").trim();
 }
