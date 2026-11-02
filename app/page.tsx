@@ -636,6 +636,7 @@ export default function Home() {
   const doneSec = segs.filter((s) => s.status !== "queued" && s.status !== "working").reduce((n, s) => n + s.durSec, 0);
   const sttPct = totalSec > 0 ? Math.min(100, Math.round((doneSec / totalSec) * 100)) : 0;
   const failed = segs.filter((s) => s.status === "failed").length;
+  const genBusy = busy.startsWith("회의록");
   const canSummarize = recState === "idle" && pending === 0 && !busy && transcript.trim().length > 0;
 
   return (
@@ -837,7 +838,7 @@ export default function Home() {
           </button>
         </div>
       )}
-      {waitMsg && <div className="alert info">{waitMsg}</div>}
+      {waitMsg && !genBusy && <div className="alert info">{waitMsg}</div>}
 
       {/* 1. 입력 방식 선택 */}
       {!started && (
@@ -908,7 +909,7 @@ export default function Home() {
         </section>
       )}
 
-      {busy && (
+      {busy && !genBusy && (
         <div className="alert info">
           <span className="spinner" /> {busy}
         </div>
@@ -927,11 +928,6 @@ export default function Home() {
           </div>
           <div className="progress" role="progressbar" aria-valuenow={sttPct} aria-valuemin={0} aria-valuemax={100}>
             <span style={{ width: `${sttPct}%` }} />
-          </div>
-          <div className="segbar" aria-hidden>
-            {segs.map((s) => (
-              <span key={s.id} className={`seg ${s.status}`} title={`${fmtTime(s.startSec)} · ${s.status}`} />
-            ))}
           </div>
           {failed > 0 && pending === 0 && (
             <div className="row tight">
@@ -996,6 +992,14 @@ export default function Home() {
               {minutes ? "회의록 다시 만들기" : "회의록 만들기"}
             </button>
           </div>
+          {genBusy && (
+            <div className="genstatus">
+              <div className="alert info">
+                <span className="spinner" /> {busy}
+              </div>
+              {waitMsg && <div className="alert info soft">{waitMsg}</div>}
+            </div>
+          )}
         </section>
       )}
 

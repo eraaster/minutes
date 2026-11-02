@@ -763,3 +763,14 @@ a.btn {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
+
+.genstatus {
+  margin-top: 12px;
+}
+.genstatus .alert {
+  margin-bottom: 8px;
+}
+.alert.soft {
+  background: transparent;
+  border: 1px dashed var(--line);
+}
