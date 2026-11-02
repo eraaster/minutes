@@ -14,6 +14,7 @@ type Body = { stage: Stage; text: string; ctx: PromptCtx };
 const MAX_OUT: Record<Stage, number> = { body: 3200, frame: 2500, fix: 3500 };
 const BRIEF_OUT: Record<Stage, number> = { body: 1500, frame: 1500, fix: 3500 };
 const MAX_IN_CHARS = 7000;
+const MEMO_MAX = 300;
 
 export async function POST(req: Request) {
   const denied = checkAuth(req);
@@ -37,6 +38,8 @@ export async function POST(req: Request) {
     prevTitles: (body.ctx.prevTitles || []).slice(-15),
     knownTerms: (body.ctx.knownTerms || []).slice(-40),
     glossary: String(body.ctx.glossary || "").slice(0, CONTEXT_MAX),
+    background: String(body.ctx.background || "").trim().slice(0, MEMO_MAX),
+    memo: String(body.ctx.memo || "").trim().slice(0, MEMO_MAX),
   };
 
   const messages = [

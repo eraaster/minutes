@@ -17,6 +17,7 @@ export default function AccountPanel() {
   const [key, setKey] = useState("");
   const [pw, setPw] = useState("");
   const [lang, setLang] = useState("ko");
+  const [background, setBackground] = useState("");
   const [showKey, setShowKey] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -26,6 +27,7 @@ export default function AccountPanel() {
     setKey(account.groqKey);
     setPw(account.pw);
     setLang(account.lang);
+    setBackground(account.background);
     setShowKey(false);
     const before = document.activeElement as HTMLElement | null;
     const t = setTimeout(() => document.getElementById(focusOn === "key" ? "groq-key" : "mm-author")?.focus(), 60);
@@ -44,7 +46,7 @@ export default function AccountPanel() {
     if (e.key === "Escape") closeAccount();
     if (e.key !== "Tab") return;
     // 패널 안에서만 Tab 순환
-    const items = panelRef.current?.querySelectorAll<HTMLElement>("a[href],button:not(:disabled),input,select");
+    const items = panelRef.current?.querySelectorAll<HTMLElement>("a[href],button:not(:disabled),input,select,textarea");
     if (!items?.length) return;
     const first = items[0];
     const last = items[items.length - 1];
@@ -58,7 +60,7 @@ export default function AccountPanel() {
   };
 
   const keyBad = !!key.trim() && !KEY_RE.test(key.trim());
-  const dirty = author !== account.author || key !== account.groqKey || pw !== account.pw || lang !== account.lang;
+  const dirty = author !== account.author || key !== account.groqKey || pw !== account.pw || lang !== account.lang || background !== account.background;
 
   const save = () => {
     if (keyBad) {
@@ -67,7 +69,7 @@ export default function AccountPanel() {
     }
     const a = author.trim();
     const k = key.trim();
-    saveAccount({ author: a, groqKey: k, pw, lang });
+    saveAccount({ author: a, groqKey: k, pw, lang, background: background.trim() });
     closeAccount();
     const who = a ? `${a}님` : "설정";
     const mode = k ? "내 키로 사용" : pw ? "공용 키(비밀번호)로 사용" : "키 없음";
@@ -153,6 +155,20 @@ export default function AccountPanel() {
               <option value="auto">자동 감지</option>
               <option value="en">English</option>
             </select>
+          </label>
+          <label className="field mt">
+            <span>회사·팀 배경 (선택)</span>
+            <textarea
+              className="memo"
+              rows={3}
+              maxLength={300}
+              value={background}
+              onChange={(e) => setBackground(e.target.value)}
+              placeholder="예: AI 인프라 회사의 연구소. 모듈 단위로 일하며 모듈장이 이끎"
+            />
+            <small className="muted memocount">
+              AI가 녹취를 이해하는 참고 자료로만 보내요. · {background.length}/300
+            </small>
           </label>
           <div className="actions">
             {open && dirty && <span className="muted unsaved">저장 안 된 변경사항 · Enter로 저장</span>}

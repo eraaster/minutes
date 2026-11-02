@@ -5,8 +5,8 @@
 import { useSyncExternalStore } from "react";
 import { GlossaryEntry, migrateTerms, parseGlossary } from "./glossary";
 
-export type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number };
-export type Account = { author: string; groqKey: string; pw: string; lang: string };
+export type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number; memo?: string };
+export type Account = { author: string; groqKey: string; pw: string; lang: string; background: string };
 /** 작성 화면 상황: 다른 화면에서 안내·확인할 때 씀 */
 export type Activity = { recording: boolean; working: boolean; dirty: boolean };
 
@@ -30,6 +30,7 @@ export const LS = {
   brief: "mm-brief",
   terms: "mm-terms",
   glossary: "mm-glossary",
+  background: "mm-background",
 };
 
 export function lsGet(k: string) {
@@ -71,7 +72,7 @@ function loadHistory(): HistoryItem[] {
 }
 
 const EMPTY: State = {
-  account: { author: "", groqKey: "", pw: "", lang: "ko" },
+  account: { author: "", groqKey: "", pw: "", lang: "ko", background: "" },
   glossary: [],
   history: [],
   accountOpen: null,
@@ -92,6 +93,7 @@ function current(): State {
         groqKey: lsGet(LS.key) || "",
         pw: lsGet(LS.pw) || "",
         lang: lsGet(LS.lang) || "ko",
+        background: lsGet(LS.background) || "",
       },
       glossary: loadGlossary(),
       history: loadHistory(),
@@ -138,6 +140,7 @@ export function saveAccount(a: Account) {
   lsSet(LS.key, a.groqKey);
   lsSet(LS.pw, a.pw);
   lsSet(LS.lang, a.lang);
+  lsSet(LS.background, a.background);
   update({ account: a });
 }
 export const openAccount = (focus: "name" | "key" = "name") => update({ accountOpen: focus });

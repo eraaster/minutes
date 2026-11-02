@@ -1001,3 +1001,7 @@ a.btn {
 @media (max-width: 640px) {
   .tools input, .popover input { font-size: 16px; }
 }
+
+/* 배경 · 회의 메모 */
+.memo { resize: vertical; min-height: 64px; line-height: 1.5; }
+.memocount { text-align: right; }

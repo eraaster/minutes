@@ -16,7 +16,23 @@ const TYPE_LABEL: Record<PromptCtx["type"], string> = {
   weekly: "주간회의",
 };
 
+/** "[배경]" 섹션. 두 메모가 모두 비었으면 빈 문자열 (빈 헤더는 토큰 낭비 + 배경을 지어낼 빌미가 됨) */
+function backgroundBlock(ctx: PromptCtx): string {
+  const lines = [
+    ctx.background?.trim() ? `회사·팀: ${ctx.background.trim()}` : "",
+    ctx.memo?.trim() ? `이 회의: ${ctx.memo.trim()}` : "",
+  ].filter(Boolean);
+  return lines.length ? `[배경]\n${lines.join("\n")}\n` : "";
+}
+
 export function systemPrompt(stage: Stage, ctx: PromptCtx): string {
+  const base = basePrompt(stage, ctx);
+  if (!backgroundBlock(ctx)) return base;
+  const rule = "[배경 규칙] 배경은 이해를 돕는 참고용. 녹취에 없는 내용을 배경에서 가져와 회의록에 쓰지 말 것.";
+  return `${base}\n\n${rule}${stage === "fix" ? " 배경에 있는 단어를 근거로 녹취를 교정하지 말 것." : ""}`;
+}
+
+function basePrompt(stage: Stage, ctx: PromptCtx): string {
   if (stage === "fix")
     return `당신은 회의 녹취록 교정자입니다. 음성인식(받아쓰기) 결과의 한 구간을 받아 음성인식 오류만 고칩니다.
 
@@ -133,9 +149,10 @@ export function userPrompt(stage: Stage, text: string, ctx: PromptCtx): string {
     .filter(Boolean)
     .join("\n");
 
+  const bg = backgroundBlock(ctx);
   if (stage === "fix") {
     return `[회의 제목] ${ctx.title || "없음"}
-[참고 용어 사전]
+${bg}[참고 용어 사전]
 ${ctx.glossary || "없음"}
 
 [녹취록 구간 ${ctx.part}/${ctx.total}]
@@ -144,7 +161,7 @@ ${text}`;
   if (stage === "body") {
     return `[회의 정보]
 ${info}
-[앞 구간 주제] ${ctx.prevTitles?.length ? ctx.prevTitles.join(" / ") : "없음"}  ← 이 구간 첫 부분이 이 이야기의 연속일 때만 같은 제목 사용
+${bg}[앞 구간 주제] ${ctx.prevTitles?.length ? ctx.prevTitles.join(" / ") : "없음"}  ← 이 구간 첫 부분이 이 이야기의 연속일 때만 같은 제목 사용
 [이미 설명한 용어] ${ctx.knownTerms?.length ? ctx.knownTerms.join(", ") : "없음"}
 ${ctx.glossary ? `[참고 용어 사전]\n${ctx.glossary}\n` : ""}
 [녹취록 구간 ${ctx.part}/${ctx.total}]
@@ -152,7 +169,7 @@ ${text}`;
   }
   return `[회의 정보]
 ${info}
-
+${bg}
 ${text}`;
 }
 

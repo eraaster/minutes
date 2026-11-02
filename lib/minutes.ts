@@ -43,6 +43,8 @@ export type PromptCtx = {
   needPeople?: boolean;
   brief?: boolean; // 간결 모드 (토큰 절약)
   glossary?: string; // 이 구간 관련 용어 사전 첨부문 (body·fix)
+  background?: string; // 회사·팀 배경 (계정 설정, 선택)
+  memo?: string; // 이 회의 메모 (선택)
 };
 
 export type Section = { title: string; content: string };

@@ -11,7 +11,7 @@ import {
   rmsInt16,
   splitToChunks,
 } from "@/lib/audio";
-import { applyGlossary, findGlossary, glossaryContext, normalizeGlossary } from "@/lib/glossary";
+import { applyGlossary, findGlossary, glossaryContext, normalizeGlossary, whisperPrompt } from "@/lib/glossary";
 import {
   HistoryItem,
   LS,
@@ -55,11 +55,6 @@ const GROQ_KEYS_URL = "https://console.groq.com/keys";
 const SILENCE_RMS = 0.0015; // 이보다 조용한 청크(약 100초)는 전사 생략
 const TEXT_CHUNK = 2800; // 회의록 작성 1회에 보낼 녹취록 글자 수 (Groq 무료: 요청당 약 8K 토큰)
 const TEXT_CHUNK_BRIEF = 4000; // 간결 모드는 출력이 짧아서 더 크게 → 호출 수·지시문 반복 감소
-/** Whisper 힌트: "회의 제목. 용어1, 용어2, …" 200자 이내 (용어가 중간에 잘리지 않게) */
-function whisperPrompt(title: string, terms: string): string {
-  const s = [title.trim(), terms.trim()].filter(Boolean).join(". ");
-  return s.length <= 200 ? s : s.slice(0, 200).replace(/[,.]?\s*[^,.]*$/, "");
-}
 /** 교정 구간들을 합쳐 녹취록으로 (타임스탬프 앞은 빈 줄) */
 const joinFix = (parts: FixPart[]) => parts.map(applyFix).join("\n").replace(/\n+(?=\[\d{1,2}:\d{2})/g, "\n\n");
 const shortModel = (m: string) => m.replace(/^(openai|meta-llama|qwen)\//, "");
@@ -95,9 +90,10 @@ export default function Composer() {
   const [time, setTime] = useState("");
   const [place, setPlace] = useState("");
   const [people, setPeople] = useState("");
+  const [memo, setMemo] = useState(""); // 이 회의 메모 (선택)
   const [mtype, setMtype] = useState<MeetingType>("agenda");
   const [date, setDate] = useState(today());
-  const { author, groqKey, pw, lang } = useStore((s) => s.account);
+  const { author, groqKey, pw, lang, background } = useStore((s) => s.account);
   const glossary = useStore((s) => s.glossary); // 자동 치환·Whisper prompt·AI 첨부
   const openReq = useStore((s) => s.openRequest);
   const [brief, setBrief] = useState(false);
@@ -135,8 +131,8 @@ export default function Composer() {
   const [dragOver, setDragOver] = useState(false);
 
   // useCallback 안에서 최신 값을 읽기 위한 ref
-  const cfg = useRef({ pw, lang, title, groqKey, glossary });
-  cfg.current = { pw, lang, title, groqKey, glossary };
+  const cfg = useRef({ pw, lang, title, groqKey, glossary, memo });
+  cfg.current = { pw, lang, title, groqKey, glossary, memo };
   // "(미정)", "미정", "-" 같은 자리채움 값은 빈칸으로 취급 → AI 자동 입력 대상
   const blank = (v: string) => (/^[\s(（\[]*(미정|없음|미상|tbd|todo|-|\?)?[\s)）\]]*$/i.test(v) ? "" : v.trim());
   const info = (): MeetingInfo => ({
@@ -262,8 +258,8 @@ export default function Composer() {
 
         const fd = new FormData();
         fd.append("file", encodeWav(pcm), "chunk.wav");
-        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목 + 용어 사전만 힌트로
-        fd.append("prompt", whisperPrompt(cfg.current.title, cfg.current.glossary.map((e) => e.term).join(", ")));
+        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목 + 회의 메모 앞부분 + 용어 사전만 힌트로
+        fd.append("prompt", whisperPrompt(cfg.current.title, cfg.current.memo, cfg.current.glossary.map((e) => e.term)));
         fd.append("language", cfg.current.lang);
         try {
           const data = await callApi("/api/transcribe", { method: "POST", body: fd });
@@ -444,7 +440,7 @@ export default function Composer() {
     const orig = transcript;
     if (!orig.trim()) return;
     setError("");
-    const ctxBase = { ...info(), dateLabel: dateLabel(date) } as PromptCtx;
+    const ctxBase = { ...info(), dateLabel: dateLabel(date), background, memo } as PromptCtx;
     try {
       const parts = splitText(orig, TEXT_CHUNK);
       const out: FixPart[] = [];
@@ -520,6 +516,8 @@ export default function Composer() {
       place: mi.place,
       participants: mi.participants,
       type: mi.type,
+      background,
+      memo,
     };
     try {
       const parts = splitText(text, brief ? TEXT_CHUNK_BRIEF : TEXT_CHUNK);
@@ -580,6 +578,7 @@ export default function Composer() {
         minutes: full,
         transcript: text,
         createdAt: Date.now(),
+        memo,
       };
       addHistory(item);
     } catch (e) {
@@ -650,6 +649,7 @@ export default function Composer() {
     setTime("");
     setPlace("");
     setPeople("");
+    setMemo("");
     setDate(today());
     setError("");
     setNotice("");
@@ -673,6 +673,7 @@ export default function Composer() {
     editedRef.current = true;
     setTitle(h.title);
     setDate(h.date);
+    setMemo(h.memo || "");
     setTranscript(h.transcript);
     setPreFix(null);
     setFixParts(null);
@@ -757,6 +758,18 @@ export default function Composer() {
           <input value={people} onChange={(e) => setPeople(e.target.value)} placeholder="비워두면 AI가 녹취에서 추정 · 예: 대표님, Jonathan, Daniel"
             autoComplete="off"
             name="mm-participants" />
+        </label>
+        <label className="field mt">
+          <span>이 회의 메모 (선택)</span>
+          <textarea
+            className="memo"
+            rows={2}
+            maxLength={300}
+            value={memo}
+            onChange={(e) => setMemo(e.target.value)}
+            placeholder="예: 11월 월간 전체회의. 연구소장 진행. 모듈 협업 규칙 공지"
+          />
+          <small className="muted memocount">{memo.length}/300</small>
         </label>
       </section>
 

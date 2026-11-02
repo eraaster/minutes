@@ -99,6 +99,19 @@ export function applyGlossary(text: string, glossary: GlossaryEntry[]): { text: 
   return { text: out, count };
 }
 
+const WHISPER_MAX = 200;
+const MEMO_HEAD = 60; // 용어 자리를 남기기 위해 메모는 앞부분만
+
+/** Whisper 힌트: "회의 제목. 메모 앞부분. 용어1, 용어2, …" 200자 이내 (용어가 중간에 잘리지 않게). 빈 값은 뺌 */
+export function whisperPrompt(title: string, memo: string, terms: string[]): string {
+  const m = clean(memo);
+  const head = m.length <= MEMO_HEAD ? m : m.slice(0, MEMO_HEAD).replace(/\s+\S*$/, "");
+  const s = [clean(title), head, terms.join(", ")].filter(Boolean).join(". ");
+  if (s.length <= WHISPER_MAX) return s;
+  const cut = s.slice(0, WHISPER_MAX);
+  return cut.replace(/[,.]?\s*[^,.]*$/, "") || cut;
+}
+
 /* ---------- 문맥 검색 ---------- */
 
 const CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
