@@ -24,6 +24,7 @@ import {
   emptyMeta,
   frameDigest,
   mergeSections,
+  groupMinorSections,
   parseBody,
   parseMeta,
   parseParticipants,
@@ -526,7 +527,7 @@ export default function Home() {
         all.push(...r.sections);
         parseMeta(r.metaLines, meta);
       }
-      const sections = mergeSections(all);
+      const sections = groupMinorSections(mergeSections(all));
 
       setBusy(`회의록 작성 중… ${Math.round((parts.length / (parts.length + 1)) * 100)}% (마무리 정리)`);
       const needTitle = !mi.title;
@@ -545,7 +546,7 @@ export default function Home() {
       if (needPeople && fin.participants.length) setPeople(fin.participants.join(", "));
 
       fin.models = [...usedModels.current].map(shortModel);
-      const full = assemble(fin, sections, meta, frame);
+      const full = assemble(fin, sections, meta, frame, text);
       if (llmFallback.current) {
         setNotice(
           `일부 구간은 ${shortModel(llmFallback.current)} 한도 초과로 다른 모델(${fin.models

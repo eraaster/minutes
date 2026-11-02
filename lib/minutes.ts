@@ -186,6 +186,99 @@ export function mergeSections(all: Section[]): Section[] {
   return out;
 }
 
+/**
+ * 안건 과분할 방지: 안건이 6개를 넘으면 짧은 안건(불릿 2개 이하 & 300자 미만)을
+ * 맨 끝 "기타 공지 및 논의"로 모음. 제목이 "기타"로 시작하는 안건은 항상 모음.
+ * 원래 제목은 "#### ○ 제목"으로 남김.
+ */
+export const MISC_TITLE = "기타 공지 및 논의";
+
+export function groupMinorSections(sections: Section[]): Section[] {
+  const many = sections.length > 6;
+  const isMinor = (s: Section) => {
+    if (/^기타/.test(s.title)) return true;
+    if (!many) return false;
+    const bullets = (s.content.match(/^[-*]\s/gm) || []).length;
+    return bullets <= 2 && s.content.length < 300;
+  };
+  const keep = sections.filter((s) => !isMinor(s));
+  const minor = sections.filter(isMinor);
+  if (!minor.length) return sections;
+  const content = minor.map((s) => `#### ○ ${s.title}\n${s.content}`).join("\n\n");
+  return [...keep, { title: MISC_TITLE, content }];
+}
+
+/* ---------- 기한 검증 (날조 방지) ---------- */
+
+const squash = (s: string) => s.replace(/\s+/g, "");
+
+/** 녹취록에 "11월 30일", "11/30", "11.30" 같은 표현이 있는지 */
+function dateInTranscript(m: number, d: number, transcript: string): boolean {
+  const M = `0?${m}`;
+  const D = `0?${d}`;
+  return (
+    new RegExp(`(?<!\\d)${M}\\s*월\\s*${D}\\s*일`).test(transcript) ||
+    new RegExp(`(?<!\\d)${M}\\s*[/.]\\s*${D}(?!\\d)`).test(transcript)
+  );
+}
+
+// (2026.)11/30, 11.30, 11월 30일 + 선택적 (요일)
+const DATE_RE = /(?:(\d{4})\s*[./-]\s*)?(\d{1,2})\s*(?:[/.]|월)\s*(\d{1,2})(?!\d)\s*일?(\s*[(（]\s*[일월화수목금토]\s*[)）])?/g;
+
+/** 표의 '기한' 칸 하나를 녹취록과 대조해 고침 */
+export function checkDeadline(cell: string, transcript: string, year: number): string {
+  const v = cell.trim();
+  if (!v || /^[(（]?\s*(미정|-|없음)\s*[)）]?$/.test(v)) return v;
+  const flat = squash(transcript);
+
+  const dates = [...v.matchAll(DATE_RE)].filter((m) => {
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    return mo >= 1 && mo <= 12 && d >= 1 && d <= 31;
+  });
+
+  if (dates.length && dates.every((m) => dateInTranscript(Number(m[2]), Number(m[3]), transcript))) {
+    // 날짜 근거 있음 → 적힌 요일만 회의 연도 달력 기준으로 바로잡음
+    return v.replace(DATE_RE, (all, y, mo, d, dow) => {
+      if (!dow) return all;
+      const day = new Date(Number(y) || year, Number(mo) - 1, Number(d)).getDay();
+      return all.replace(/[일월화수목금토](?=\s*[)）]\s*$)/, DOW[day]);
+    });
+  }
+
+  // 숫자 날짜가 근거 없음 → 숫자를 걷어낸 나머지 표현(예: "다음 주 금요일")이 녹취에 있으면 그것만 남김
+  const rest = (dates.length ? v.replace(DATE_RE, " ") : v)
+    .replace(/[()（）\[\]~～]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const core = squash(rest).replace(/까지$/, "");
+  return core && flat.includes(core) ? rest : "미정";
+}
+
+/** 마크다운 표 중 '기한' 열이 있는 표의 값을 검증 */
+export function verifyDeadlines(md: string, transcript: string, year: number): string {
+  if (!transcript.trim()) return md;
+  let col = -1;
+  return md
+    .split("\n")
+    .map((line) => {
+      if (!/^\s*\|/.test(line)) {
+        col = -1;
+        return line;
+      }
+      const c = line.trim().replace(/^\||\|$/g, "").split("|");
+      if (col < 0) {
+        col = c.findIndex((x) => x.trim() === "기한");
+        return line;
+      }
+      if (/^\s*:?-+:?\s*$/.test(c[0] ?? "")) return line; // 구분선
+      if (c[col] === undefined) return line;
+      c[col] = ` ${checkDeadline(c[col], transcript, year)} `;
+      return `|${c.join("|")}|`;
+    })
+    .join("\n");
+}
+
 /* ---------- frame 입력 ---------- */
 
 /** 본문의 "- (이름) ..." 패턴에서 발언자 후보 추출 (많이 나온 순) */
@@ -252,7 +345,7 @@ function table(head: string[], rows: string[][]): string {
   ].join("\n");
 }
 
-export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, frameRaw: string): string {
+export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, frameRaw: string, transcript = ""): string {
   const f = parseFrame(frameRaw);
   const out: string[] = [];
 
@@ -342,7 +435,8 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
     "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요." +
       (info.models?.length ? ` (작성 모델: ${info.models.join(", ")})` : "")
   );
-  return out.join("\n") + "\n";
+  const year = Number(info.date.slice(0, 4)) || new Date().getFullYear();
+  return verifyDeadlines(out.join("\n"), transcript, year) + "\n";
 }
 
 /** 비어 있는 제목·참석자를 frame 결과로 채움 */
