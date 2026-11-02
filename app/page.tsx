@@ -133,12 +133,14 @@ export default function Home() {
   const openSettingsRef = useRef<(k?: boolean) => void>(() => {});
   const cfg = useRef({ pw, lang, title, groqKey });
   cfg.current = { pw, lang, title, groqKey };
+  // "(미정)", "미정", "-" 같은 자리채움 값은 빈칸으로 취급 → AI 자동 입력 대상
+  const blank = (v: string) => (/^[\s(（\[]*(미정|없음|미상|tbd|todo|-|\?)?[\s)）\]]*$/i.test(v) ? "" : v.trim());
   const info = (): MeetingInfo => ({
-    title: title.trim(),
+    title: blank(title),
     date,
-    time: time.trim(),
-    place: place.trim(),
-    participants: parseParticipants(people),
+    time: blank(time),
+    place: blank(place),
+    participants: parseParticipants(blank(people)),
     author: author.trim(),
     type: mtype,
   });

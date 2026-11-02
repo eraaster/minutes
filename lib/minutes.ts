@@ -88,6 +88,8 @@ export function normTitle(t: string): string {
   return t
     .replace(/^\s*(\d+[.)]\s*|[○□■●▶·-]\s*)+/, "")
     .replace(/\*\*/g, "")
+    // "(계속)", "- 이어서", "(cont.)" 같은 이어쓰기 표시는 같은 주제로 합치기 위해 제거
+    .replace(/\s*[-–—:]?\s*[(（\[]?\s*(계속|이어서|continued|cont\.?)\s*[)）\]]?\s*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
 }
