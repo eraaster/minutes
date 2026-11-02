@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-export const GROQ_BASE = "https://api.groq.com/openai/v1";
+export const GROQ_BASE = process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1";
 
 /** 사용자가 직접 넣은 Groq 키 (x-groq-key 헤더). 형식이 맞을 때만 사용 */
 function userKey(req: Request): string | null {

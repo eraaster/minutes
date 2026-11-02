@@ -736,3 +736,11 @@ a.btn {
   accent-color: var(--accent);
   margin: 0;
 }
+
+.errline {
+  display: block;
+  color: var(--err-ink);
+  font-size: 12px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}

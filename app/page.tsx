@@ -234,42 +234,65 @@ export default function Home() {
 
   /* ----- API 호출 (무료 한도 429 자동 대기·재시도) ----- */
   const callApi = useCallback(async (url: string, init: RequestInit) => {
-    for (let attempt = 0; attempt < 8; attempt++) {
+    let lastErr = "";
+    // 응답 본문에서 에러 메시지 추출 (JSON이 아니면 앞부분 텍스트)
+    const errOf = async (res: Response) => {
+      const t = await res.text().catch(() => "");
+      try {
+        const j = JSON.parse(t);
+        return String(j.error?.message || j.error || t).slice(0, 300);
+      } catch {
+        return t.replace(/\s+/g, " ").slice(0, 200) || res.statusText;
+      }
+    };
+    for (let attempt = 0; attempt < 6; attempt++) {
       const headers = new Headers(init.headers);
       if (cfg.current.pw) headers.set("x-app-password", encodeURIComponent(cfg.current.pw));
       if (cfg.current.groqKey.trim()) headers.set("x-groq-key", cfg.current.groqKey.trim());
+      // 90초 안에 응답이 없으면 끊고 재시도
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 90_000);
       let res: Response;
       try {
-        res = await fetch(url, { ...init, headers });
-      } catch {
+        res = await fetch(url, { ...init, headers, signal: ctrl.signal });
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = ctrl.signal.aborted ? "90초 동안 응답 없음" : `네트워크 오류 (${(e as Error).message})`;
+        setWaitMsg(`${lastErr} · ${3 * (attempt + 1)}초 뒤 다시 시도합니다…`);
         await sleep(3000 * (attempt + 1));
+        setWaitMsg("");
         continue;
       }
+      clearTimeout(timer);
       if (res.ok) return res.json();
       if (res.status === 401) {
-        const b = await res.json().catch(() => ({}));
+        const msg = await errOf(res);
         openSettingsRef.current(true);
-        throw new AuthError(b.error || "설정에서 '내 Groq API 키'를 넣거나 접속 비밀번호를 입력해 주세요.");
+        throw new AuthError(msg || "설정에서 '내 Groq API 키'를 넣거나 접속 비밀번호를 입력해 주세요.");
       }
       if (res.status === 429 || res.status >= 500) {
         const ra = Number(res.headers.get("retry-after"));
-        const sec = Number.isFinite(ra) && ra > 0 ? Math.ceil(ra) : Math.min(60, 4 * 2 ** attempt);
+        const sec = Number.isFinite(ra) && ra > 0 ? Math.ceil(ra) : Math.min(30, 4 * 2 ** attempt);
+        lastErr = `${res.status} ${await errOf(res)}`;
         if (res.status === 429 && sec > 180) {
           const mins = Math.ceil(sec / 60);
           throw new Error(
             `오늘 무료 사용 한도를 모두 썼습니다. 약 ${mins >= 60 ? `${Math.ceil(mins / 60)}시간` : `${mins}분`} 뒤에 다시 시도해 주세요. (녹취록은 그대로 남아 있습니다)`
           );
         }
-        setWaitMsg(`무료 사용 한도에 걸려 ${sec}초 기다린 뒤 다시 시도합니다…`);
+        setWaitMsg(
+          res.status === 429
+            ? `무료 사용 한도에 걸려 ${sec}초 기다린 뒤 다시 시도합니다…`
+            : `서버 오류(${res.status}) · ${sec}초 뒤 다시 시도합니다…`
+        );
         await sleep((sec + 1) * 1000);
         setWaitMsg("");
         continue;
       }
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || `요청 실패 (${res.status})`);
+      throw new Error(`${res.status} ${await errOf(res)}`);
     }
     setWaitMsg("");
-    throw new Error("여러 번 재시도했지만 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    throw new Error(`여러 번 재시도했지만 실패했습니다. 마지막 오류: ${lastErr || "알 수 없음"}`);
   }, []);
 
   /* ----- 전사 큐: 청크를 순서대로 하나씩 처리 ----- */
@@ -897,7 +920,16 @@ export default function Home() {
           </div>
           {failed > 0 && pending === 0 && (
             <div className="row tight">
-              <span className="muted">{failed}개 구간을 받아적지 못했습니다.</span>
+              <span className="muted">
+                {failed}개 구간을 받아적지 못했습니다.
+                {[...new Set(segs.filter((x) => x.status === "failed" && x.error).map((x) => x.error))]
+                  .slice(0, 2)
+                  .map((m) => (
+                    <span key={m} className="errline">
+                      원인: {m}
+                    </span>
+                  ))}
+              </span>
               <button className="btn sm" onClick={retryFailed}>
                 실패 구간 재시도
               </button>
