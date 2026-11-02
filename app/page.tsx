@@ -93,6 +93,12 @@ export default function Home() {
   const [groqKey, setGroqKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 설정 입력값(초안) → 저장(Enter/버튼) 시 적용
+  const [dAuthor, setDAuthor] = useState("");
+  const [dKey, setDKey] = useState("");
+  const [dPw, setDPw] = useState("");
+  const [dLang, setDLang] = useState("ko");
+  const [toast, setToast] = useState("");
   const [loaded, setLoaded] = useState(false);
 
   const [segs, setSegs] = useState<Seg[]>([]);
@@ -120,6 +126,7 @@ export default function Home() {
   const [dragOver, setDragOver] = useState(false);
 
   // useCallback 안에서 최신 값을 읽기 위한 ref
+  const openSettingsRef = useRef<(k?: boolean) => void>(() => {});
   const cfg = useRef({ pw, lang, title, groqKey });
   cfg.current = { pw, lang, title, groqKey };
   const info = (): MeetingInfo => ({
@@ -147,13 +154,54 @@ export default function Home() {
       /* ignore */
     }
   }, []);
-  useEffect(() => lsSet(LS.pw, pw), [pw]);
-  useEffect(() => {
-    if (loaded) lsSet(LS.key, groqKey.trim());
-  }, [groqKey, loaded]);
-  useEffect(() => lsSet(LS.lang, lang), [lang]);
-  useEffect(() => lsSet(LS.author, author), [author]);
+
+
+
   useEffect(() => lsSet(LS.type, mtype), [mtype]);
+
+  /* ----- 설정: 초안 → 저장 ----- */
+  // (callApi 안에서 쓰기 위해 ref로 노출)
+  const KEY_RE = /^gsk_[A-Za-z0-9]{20,}$/;
+  const loadDrafts = () => {
+    setDAuthor(author);
+    setDKey(groqKey);
+    setDPw(pw);
+    setDLang(lang);
+  };
+  const openSettings = (focusKey = false) => {
+    loadDrafts();
+    setSettingsOpen(true);
+    setTimeout(() => {
+      const el = document.getElementById(focusKey ? "groq-key" : "mm-author");
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      el?.focus();
+    }, 60);
+  };
+  openSettingsRef.current = openSettings;
+  const dirty = dAuthor !== author || dKey !== groqKey || dPw !== pw || dLang !== lang;
+  const keyBad = !!dKey.trim() && !KEY_RE.test(dKey.trim());
+  const saveSettings = () => {
+    if (keyBad) {
+      document.getElementById("groq-key")?.focus();
+      return;
+    }
+    const a = dAuthor.trim();
+    const k = dKey.trim();
+    setAuthor(a);
+    setGroqKey(k);
+    setPw(dPw);
+    setLang(dLang);
+    lsSet(LS.author, a);
+    lsSet(LS.key, k);
+    lsSet(LS.pw, dPw);
+    lsSet(LS.lang, dLang);
+    setSettingsOpen(false);
+    setError("");
+    const who = a ? `${a}님` : "설정";
+    const mode = k ? "내 키로 사용" : dPw ? "공용 키(비밀번호)로 사용" : "키 없음";
+    setToast(`저장됐어요 · ${who} · ${mode}`);
+    setTimeout(() => setToast(""), 2600);
+  };
 
   /* ----- 세그먼트 상태 관리 ----- */
   const commit = (next: Seg[]) => {
@@ -195,7 +243,7 @@ export default function Home() {
       if (res.ok) return res.json();
       if (res.status === 401) {
         const b = await res.json().catch(() => ({}));
-        setSettingsOpen(true);
+        openSettingsRef.current(true);
         throw new AuthError(b.error || "설정에서 '내 Groq API 키'를 넣거나 접속 비밀번호를 입력해 주세요.");
       }
       if (res.status === 429 || res.status >= 500) {
@@ -532,12 +580,35 @@ export default function Home() {
           <span className="logo" aria-hidden />
           <span>회의록 메이커</span>
         </div>
-        {started && (
-          <button className="btn ghost sm" onClick={newMeeting}>
-            새 회의
-          </button>
-        )}
+        <div className="topright">
+          {started && (
+            <button className="btn ghost sm" onClick={newMeeting}>
+              새 회의
+            </button>
+          )}
+          {loaded && (
+            <button
+              className="userchip"
+              onClick={() => (settingsOpen ? setSettingsOpen(false) : openSettings())}
+              title="설정 열기"
+            >
+              <span className="avatar" aria-hidden>
+                {author ? author.trim().charAt(0).toUpperCase() : "?"}
+              </span>
+              <span className="who">{author ? `${author}님` : "사용자 설정"}</span>
+              <span className={`tag${groqKey ? " mine" : pw ? "" : " none"}`}>
+                {groqKey ? "내 키" : pw ? "공용" : "키 없음"}
+              </span>
+            </button>
+          )}
+        </div>
       </header>
+
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
 
       <section className="card">
         <div className="row">
@@ -579,59 +650,88 @@ export default function Home() {
         <details
           className="settings"
           open={settingsOpen}
-          onToggle={(e) => setSettingsOpen((e.currentTarget as HTMLDetailsElement).open)}
+          onToggle={(e) => {
+            const open = (e.currentTarget as HTMLDetailsElement).open;
+            if (open && !settingsOpen) loadDrafts();
+            setSettingsOpen(open);
+          }}
         >
-          <summary>설정{groqKey.trim() ? " · 내 키 사용 중" : ""}</summary>
-          <div className="field keyfield">
-            <span>
-              내 Groq API 키 (무료) ·{" "}
-              <a href={GROQ_KEYS_URL} target="_blank" rel="noopener noreferrer">
-                발급받기 ↗
-              </a>
-            </span>
-            <div className="keyrow">
-              <input
-                id="groq-key"
-                type={showKey ? "text" : "password"}
-                value={groqKey}
-                onChange={(e) => setGroqKey(e.target.value)}
-                placeholder="gsk_로 시작하는 키 붙여넣기"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <button type="button" className="btn sm" onClick={() => setShowKey((v) => !v)}>
-                {showKey ? "숨기기" : "보기"}
-              </button>
+          <summary>설정</summary>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveSettings();
+            }}
+          >
+            <div className="row">
+              <label className="field">
+                <span>사용자 이름 (작성자)</span>
+                <input
+                  id="mm-author"
+                  value={dAuthor}
+                  onChange={(e) => setDAuthor(e.target.value)}
+                  placeholder="예: Claire"
+                  autoComplete="off"
+                  enterKeyHint="done"
+                />
+              </label>
+              <label className="field">
+                <span>인식 언어</span>
+                <select value={dLang} onChange={(e) => setDLang(e.target.value)}>
+                  <option value="ko">한국어</option>
+                  <option value="auto">자동 감지</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
             </div>
-            {groqKey.trim() && !/^gsk_[A-Za-z0-9]{20,}$/.test(groqKey.trim()) && (
-              <small className="warnline">키 형식이 맞지 않아요. gsk_로 시작하는 전체 키를 붙여넣어 주세요.</small>
-            )}
-            <small className="muted">키는 이 브라우저에만 저장되고, 내 키를 넣으면 비밀번호 없이 내 무료 한도로 사용해요.</small>
-          </div>
-          <div className="row">
-            <label className="field">
-              <span>작성자</span>
-              <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="박다솔 매니저" autoComplete="off" />
-            </label>
-            <label className="field">
-              <span>인식 언어</span>
-              <select value={lang} onChange={(e) => setLang(e.target.value)}>
-                <option value="ko">한국어</option>
-                <option value="auto">자동 감지</option>
-                <option value="en">English</option>
-              </select>
-            </label>
-            <label className="field grow">
+            <div className="field keyfield mt">
+              <span>
+                내 Groq API 키 (무료) ·{" "}
+                <a href={GROQ_KEYS_URL} target="_blank" rel="noopener noreferrer">
+                  발급받기 ↗
+                </a>
+              </span>
+              <div className="keyrow">
+                <input
+                  id="groq-key"
+                  type={showKey ? "text" : "password"}
+                  value={dKey}
+                  onChange={(e) => setDKey(e.target.value)}
+                  placeholder="gsk_로 시작하는 키 붙여넣고 Enter"
+                  autoComplete="off"
+                  spellCheck={false}
+                  enterKeyHint="done"
+                />
+                <button type="button" className="btn sm" onClick={() => setShowKey((v) => !v)}>
+                  {showKey ? "숨기기" : "보기"}
+                </button>
+              </div>
+              {keyBad && (
+                <small className="warnline">키 형식이 맞지 않아요. gsk_로 시작하는 전체 키를 붙여넣어 주세요.</small>
+              )}
+              <small className="muted">키는 이 브라우저에만 저장돼요. 내 키를 넣으면 비밀번호 없이 내 무료 한도로 사용해요.</small>
+            </div>
+            <label className="field mt">
               <span>접속 비밀번호 (키가 없을 때)</span>
               <input
                 type="password"
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
+                value={dPw}
+                onChange={(e) => setDPw(e.target.value)}
                 placeholder="사이트 관리자에게 받은 비밀번호"
                 autoComplete="current-password"
+                enterKeyHint="done"
               />
             </label>
-          </div>
+            <div className="actions">
+              {dirty && <span className="muted unsaved">저장 안 된 변경사항 · Enter로 저장</span>}
+              <button type="button" className="btn ghost" onClick={() => setSettingsOpen(false)}>
+                닫기
+              </button>
+              <button type="submit" className="btn primary" disabled={keyBad}>
+                저장
+              </button>
+            </div>
+          </form>
         </details>
       </section>
 
@@ -653,17 +753,7 @@ export default function Home() {
             </li>
           </ol>
           <div className="actions">
-            <button
-              className="btn"
-              onClick={() => {
-                setSettingsOpen(true);
-                setTimeout(() => {
-                  const el = document.getElementById("groq-key");
-                  el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  el?.focus();
-                }, 50);
-              }}
-            >
+            <button className="btn" onClick={() => openSettings(true)}>
               키 입력하기
             </button>
             <a className="btn primary" href={GROQ_KEYS_URL} target="_blank" rel="noopener noreferrer">

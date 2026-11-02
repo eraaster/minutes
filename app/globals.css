@@ -629,3 +629,93 @@ a.btn {
   padding: 1px 5px;
   border-radius: 5px;
 }
+
+.topright {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.userchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px 4px 4px;
+  cursor: pointer;
+  max-width: 60vw;
+}
+.userchip .avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 13px;
+  flex: none;
+}
+.userchip .who {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userchip .tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  flex: none;
+}
+.userchip .tag.mine {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.userchip .tag.none {
+  background: var(--err-bg);
+  color: var(--err-ink);
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: var(--ink);
+  color: var(--bg);
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  animation: toastin 0.2s ease-out;
+  max-width: calc(100vw - 32px);
+  text-align: center;
+}
+@keyframes toastin {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+}
+.unsaved {
+  margin-right: auto;
+  align-self: center;
+}
+@media (max-width: 480px) {
+  .brand > span:last-child {
+    font-size: 16px;
+  }
+  .userchip .who {
+    max-width: 90px;
+  }
+}
