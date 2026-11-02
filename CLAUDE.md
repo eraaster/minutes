@@ -15,7 +15,7 @@
 - `app/api/transcribe/route.ts` — Whisper 프록시. 반복 환각 감지 시 temperature 올려 1회 재시도, `suspect` 플래그
 - `app/api/summarize/route.ts` — LLM 프록시. stage `body` / `frame` / `fix`(녹취록 교정), 모델 폴백, `fallbackFrom` 반환
 - `lib/audio.ts` — 마이크 녹음(AudioWorklet), 16kHz mono 리샘플, 90~110초 사이 가장 조용한 지점(50ms 창 RMS 최소)에서 WAV 청크 분할(Vercel 4.5MB 요청 한도 회피). 녹음(`MicRecorder`)·업로드(`splitToChunks`) 공통
-- `lib/minutes.ts`의 `groupMinorSections`(안건 6개 초과 시 짧은 안건을 "기타 공지 및 논의"로), `verifyDeadlines`(기한 열을 녹취록과 대조)
+- `lib/minutes.ts`의 `groupMinorSections`(안건 6개 초과 시 짧은 안건을 "기타 공지 및 논의"로), `verifyDeadlines`(기한 열을 녹취록과 대조), `verifyBodyDates`(본문 날짜·연도·월을 녹취록과 대조, 근거 없으면 "(날짜 미정)"/연도 삭제), `speakerCandidates`(녹취에서 "OO님"으로 불린 이름만, 용어 사전·역할 단어 제외)
 - `lib/text.ts` — 환각 문구·반복 제거(`cleanTranscript`, `repetitionScore`), 텍스트 분할, 마크다운 렌더러(`mdToHtml`)
 - `lib/prompts.ts` — AI 지시문 (상세 모드 / 간결 모드)
 - `lib/minutes.ts` — AI 응답 파싱, 주제 병합, 최종 양식 조립(`assemble`)

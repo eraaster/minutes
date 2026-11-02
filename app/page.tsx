@@ -28,6 +28,7 @@ import {
   parseBody,
   parseMeta,
   parseParticipants,
+  speakerCandidates,
 } from "@/lib/minutes";
 
 /* ---------- 타입 & 상수 ---------- */
@@ -582,16 +583,20 @@ export default function Home() {
       setBusy(`회의록 작성 중… ${Math.round((parts.length / (parts.length + 1)) * 100)}% (마무리 정리)`);
       const needTitle = !mi.title;
       const needPeople = !mi.participants.length;
+      // 참석자 후보: 녹취에서 "OO님"으로 불린 이름만, 용어 사전·주요 용어는 제외
+      const cands = needPeople
+        ? speakerCandidates(sections, text, [...parseParticipants(terms), ...meta.terms.map((t) => t[0])])
+        : undefined;
       let frame = "";
       try {
-        frame = await callLLM("frame", frameDigest(mi, sections, meta, needPeople), { ...base, needTitle, needPeople });
+        frame = await callLLM("frame", frameDigest(mi, sections, meta, cands), { ...base, needTitle, needPeople });
       } catch (e) {
         if (e instanceof AuthError) throw e;
         // 실패해도 META로 기본 섹션을 채움
       }
 
       // 비어 있던 제목·참석자는 AI 추정값으로 채우고 입력칸에도 반영
-      const fin = autoFill(mi, frame);
+      const fin = autoFill(mi, frame, cands);
       if (needTitle && fin.title) setTitle(fin.title);
       if (needPeople && fin.participants.length) setPeople(fin.participants.join(", "));
 

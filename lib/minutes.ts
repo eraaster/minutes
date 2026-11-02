@@ -226,6 +226,81 @@ function dateInTranscript(m: number, d: number, transcript: string): boolean {
 // (2026.)11/30, 11.30, 11월 30일 + 선택적 (요일)
 const DATE_RE = /(?:(\d{4})\s*[./-]\s*)?(\d{1,2})\s*(?:[/.]|월)\s*(\d{1,2})(?!\d)\s*일?(\s*[(（]\s*[일월화수목금토]\s*[)）])?/g;
 
+/**
+ * 요일 계산. 연도가 없으면 회의 연도 기준이되,
+ * 회의일보다 2개월 넘게 이전이면 다음 해로 봄 (12/15 회의의 1/10 → 다음 해 1/10)
+ */
+function weekday(y: number, m: number, d: number, meeting: Date): string {
+  if (y) return DOW[new Date(y, m - 1, d).getDay()];
+  const limit = new Date(meeting.getFullYear(), meeting.getMonth() - 2, meeting.getDate());
+  let date = new Date(meeting.getFullYear(), m - 1, d);
+  if (date < limit) date = new Date(meeting.getFullYear() + 1, m - 1, d);
+  return DOW[date.getDay()];
+}
+
+/** 녹취록에 "2026년", "26년", "2026"(4자리) 같은 연도 표현이 있는지 */
+function yearInTranscript(y: string, transcript: string): boolean {
+  const yy = y.length === 4 ? y.slice(2) : y;
+  const full = y.length === 4 ? y : `20${y}`;
+  return (
+    new RegExp(`(?<!\\d)(${full}|${yy})\\s*년`).test(transcript) ||
+    new RegExp(`(?<!\\d)${full}(?!\\d)`).test(transcript)
+  );
+}
+
+// 본문 날짜 표현: A) 2026.11.30 / 2026-11-30 / 2026/11/30  C) (2026년) 11월 (30일)  Y) 2026년  B) 11/30
+// + 선택적 (요일). 뒤따르는 "까지/부터/…"는 B가 분수(1/3)가 아니라 날짜인지 판단용 (lookahead)
+const BODY_DATE_RE = new RegExp(
+  String.raw`(?<![\d/.])(?:` +
+    String.raw`(\d{4})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})(?![\d/.])` +
+    String.raw`|(?:(\d{4}|\d{2})\s*년\s*)?(\d{1,2})\s*월(?:\s*(\d{1,2})\s*일)?` +
+    String.raw`|(\d{4}|\d{2})\s*년` +
+    String.raw`|(\d{1,2})/(\d{1,2})(?![\d/])` +
+    String.raw`)(\s*[(（]\s*[일월화수목금토]\s*[)）])?(?=(\s*(?:까지|부터|경|마감|예정|중|에))?)`,
+  "g"
+);
+
+/**
+ * 본문 속 날짜·연도·월을 녹취록과 대조.
+ *  - 월·일 근거 없음 → "(날짜 미정)"
+ *  - 연도만 근거 없음 → 연도 부분만 지움
+ *  - 근거 있음 + (요일) → 요일을 달력 기준으로 교정
+ * 회의 일자 자체는 입력 정보이므로 근거로 인정
+ */
+export function verifyBodyDates(text: string, transcript: string, meeting: Date): string {
+  const ev = `${transcript}\n${meeting.getFullYear()}년 ${meeting.getMonth() + 1}월 ${meeting.getDate()}일`;
+  const monthIn = (m: number) => new RegExp(`(?<!\\d)0?${m}\\s*월`).test(ev);
+  const MISSING = "(날짜 미정)";
+
+  const out = text.replace(BODY_DATE_RE, (all, ay, am, ad, cy, cm, cd, yo, bm, bd, dow = "", ctx, off: number, src: string) => {
+      const base = dow ? all.slice(0, all.length - dow.length) : all;
+      const fixDow = (b: string, y: string | undefined, m: number, d: number) =>
+        b + (dow ? dow.replace(/[일월화수목금토]/, weekday(y ? Number(y) : 0, m, d, meeting)) : "");
+
+      if (yo) return yearInTranscript(yo, ev) ? all : ""; // 연도만: 근거 없으면 지움
+
+      const y: string | undefined = ay || cy;
+      const m = Number(am || cm || bm);
+      const d = Number(ad || cd || bd || 0);
+      if (m < 1 || m > 12 || d > 31) return all; // 날짜가 아님
+
+      if (bm) {
+        // "1/3" 같은 분수와 구분: 요일·"~"·"까지" 등이 붙었거나 0 채움(03/14)일 때만 날짜로 봄
+        const dateish = !!dow || !!ctx || src[off - 1] === "~" || /^0/.test(bm) || /^0\d/.test(bd);
+        if (dateInTranscript(m, d, ev)) return fixDow(base, undefined, m, d);
+        return dateish ? MISSING : all;
+      }
+
+      const mdOk = d ? dateInTranscript(m, d, ev) : monthIn(m);
+      if (!mdOk) return MISSING;
+      const yOk = !y || yearInTranscript(y, ev);
+      const b = yOk ? base : base.replace(/^\d+\s*(?:년|[./-])\s*/, "");
+      return d ? fixDow(b, yOk ? y : undefined, m, d) : b + dow;
+  });
+  // 지운 자리에 남은 이중 공백 정리 (줄 앞 들여쓰기는 유지)
+  return out === text ? text : out.replace(/(\S) {2,}/g, "$1 ");
+}
+
 /** 표의 '기한' 칸 하나를 녹취록과 대조해 고침 */
 export function checkDeadline(cell: string, transcript: string, meeting: Date): string {
   const v = cell.trim();
@@ -240,14 +315,9 @@ export function checkDeadline(cell: string, transcript: string, meeting: Date): 
 
   if (dates.length && dates.every((m) => dateInTranscript(Number(m[2]), Number(m[3]), transcript))) {
     // 날짜 근거 있음 → 적힌 요일만 회의 연도 달력 기준으로 바로잡음
-    // 연도 없는 날짜가 회의일보다 2개월 넘게 이전이면 다음 해로 봄 (12/15 회의의 1/10 → 다음 해 1/10)
-    const limit = new Date(meeting.getFullYear(), meeting.getMonth() - 2, meeting.getDate());
     return v.replace(DATE_RE, (all, y, mo, d, dow) => {
       if (!dow) return all;
-      let date = new Date(Number(y) || meeting.getFullYear(), Number(mo) - 1, Number(d));
-      if (!y && date < limit) date = new Date(meeting.getFullYear() + 1, Number(mo) - 1, Number(d));
-      const day = date.getDay();
-      return all.replace(/[일월화수목금토](?=\s*[)）]\s*$)/, DOW[day]);
+      return all.replace(/[일월화수목금토](?=\s*[)）]\s*$)/, weekday(Number(y), Number(mo), Number(d), meeting));
     });
   }
 
@@ -286,23 +356,32 @@ export function verifyDeadlines(md: string, transcript: string, meeting: Date): 
 
 /* ---------- frame 입력 ---------- */
 
-/** 본문의 "- (이름) ..." 패턴에서 발언자 후보 추출 (많이 나온 순) */
-export function speakerCandidates(sections: Section[]): string[] {
+const ROLE_WORD = /^(참석자|발언자|진행자|발표자|사회자|질문자|답변자|청중|전원|모두|미상|불명확|발언자 미상)$/;
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * 본문의 "- (이름) ..." 패턴에서 발언자 후보 추출 (많이 나온 순)
+ *  - 역할 단어(참석자·발표자…), 용어 사전·주요 용어(행사·제품명 등)는 제외
+ *  - 녹취록에 "OO님" 형태로 나온 이름만 인정
+ */
+export function speakerCandidates(sections: Section[], transcript: string, exclude: string[] = []): string[] {
+  const ex = new Set(exclude.map((x) => squash(x).toLowerCase()).filter(Boolean));
   const cnt = new Map<string, number>();
   for (const s of sections)
     for (const m of s.content.matchAll(/^\s*[-*]\s*\(([^()\n]{1,20})\)/gm)) {
-      const n = m[1].trim();
-      if (!n || /^(참석자|발언자 미상|불명확)$/.test(n)) continue;
+      const n = m[1].trim().replace(/\s*님$/, "");
+      if (!n || ROLE_WORD.test(n) || ex.has(squash(n).toLowerCase())) continue;
+      if (!new RegExp(`${escRe(n)}\\s*님`).test(transcript)) continue;
       cnt.set(n, (cnt.get(n) || 0) + 1);
     }
   return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25).map((e) => e[0]);
 }
 
-export function frameDigest(info: MeetingInfo, sections: Section[], meta: Meta, needPeople = false): string {
+/** candidates: 참석자를 추정할 때만 넘김 (speakerCandidates 결과) */
+export function frameDigest(info: MeetingInfo, sections: Section[], meta: Meta, candidates?: string[]): string {
   const L: string[] = [];
-  if (needPeople) {
-    const c = speakerCandidates(sections);
-    L.push("[발언자 후보 (본문 괄호 표기)]", c.length ? c.join(", ") : "없음", "");
+  if (candidates) {
+    L.push("[발언자 후보 (녹취에서 \"OO님\"으로 불린 이름)]", candidates.length ? candidates.join(", ") : "없음", "");
   }
   L.push("[안건 (주요내용 제목)]");
   sections.forEach((s, i) => L.push(`${i + 1}. ${s.title}`));
@@ -350,8 +429,17 @@ function table(head: string[], rows: string[][]): string {
   ].join("\n");
 }
 
-export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, frameRaw: string, transcript = ""): string {
+export function assemble(info: MeetingInfo, sections0: Section[], meta: Meta, frameRaw: string, transcript = ""): string {
   const f = parseFrame(frameRaw);
+  const md = info.date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const meeting = md ? new Date(Number(md[1]), Number(md[2]) - 1, Number(md[3])) : new Date();
+  // 본문(안건 제목·주요내용)의 날짜·연도·월을 녹취록과 대조
+  const sections = transcript.trim()
+    ? sections0.map((s) => ({
+        title: verifyBodyDates(s.title, transcript, meeting),
+        content: verifyBodyDates(s.content, transcript, meeting),
+      }))
+    : sections0;
   const out: string[] = [];
 
   out.push("# Meeting Result", `## [${info.title || "회의"}]`);
@@ -440,13 +528,11 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
     "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요." +
       (info.models?.length ? ` (작성 모델: ${info.models.join(", ")})` : "")
   );
-  const md = info.date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  const meeting = md ? new Date(Number(md[1]), Number(md[2]) - 1, Number(md[3])) : new Date();
   return verifyDeadlines(out.join("\n"), transcript, meeting) + "\n";
 }
 
-/** 비어 있는 제목·참석자를 frame 결과로 채움 */
-export function autoFill(info: MeetingInfo, frameRaw: string): MeetingInfo {
+/** 비어 있는 제목·참석자를 frame 결과로 채움. candidates가 있으면 그 안의 이름만 참석자로 인정 */
+export function autoFill(info: MeetingInfo, frameRaw: string, candidates?: string[]): MeetingInfo {
   const f = parseFrame(frameRaw);
   const out = { ...info };
   const t = f.get("title");
@@ -456,8 +542,9 @@ export function autoFill(info: MeetingInfo, frameRaw: string): MeetingInfo {
   if (!out.participants.length && p) {
     const names = p
       .split(/[,，、\n]+/)
-      .map((x) => x.replace(/^[-*\s]+/, "").replace(/[()]/g, "").trim())
-      .filter((x) => x && x.length <= 20 && !/^(미상|없음|참석자|불명확)$/.test(x));
+      .map((x) => x.replace(/^[-*\s]+/, "").replace(/[()]/g, "").replace(/\s*님$/, "").trim())
+      .filter((x) => x && x.length <= 20 && !ROLE_WORD.test(x) && !/^없음$/.test(x))
+      .filter((x) => !candidates || candidates.includes(x));
     if (names.length) {
       out.participants = [...new Set(names)];
       out.participantsGuessed = true;
