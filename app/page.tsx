@@ -19,6 +19,7 @@ import {
   PromptCtx,
   Section,
   assemble,
+  autoFill,
   dateLabel,
   emptyMeta,
   frameDigest,
@@ -70,6 +71,9 @@ function download(name: string, blob: Blob) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
+const hm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+const isoDate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const safeName = (s: string) => s.replace(/[\\/:*?"<>|]+/g, "_").trim() || "회의록";
 
 /* ---------- 페이지 ---------- */
@@ -94,6 +98,7 @@ export default function Home() {
   const [recState, setRecState] = useState<"idle" | "recording" | "paused">("idle");
   const [elapsed, setElapsed] = useState(0);
   const recRef = useRef<MicRecorder | null>(null);
+  const recStartRef = useRef<Date | null>(null);
   const wakeRef = useRef<WakeLockSentinel | null>(null);
 
   const [transcript, setTranscript] = useState("");
@@ -298,6 +303,7 @@ export default function Home() {
       return;
     }
     recRef.current = rec;
+    recStartRef.current = new Date();
     setElapsed(0);
     setRecState("recording");
     requestWake();
@@ -315,6 +321,12 @@ export default function Home() {
     await rec.stop();
     recRef.current = null;
     setRecState("idle");
+    // 날짜·시간 자동 입력 (비어 있을 때만)
+    const st = recStartRef.current;
+    if (st) {
+      setDate(isoDate(st));
+      setTime((t) => t || `${hm(st)}-${hm(new Date())}`);
+    }
     releaseWake();
     pump();
   };
@@ -329,7 +341,13 @@ export default function Home() {
       const chunks = splitToChunks(pcm);
       if (!chunks.length) throw new Error("오디오가 너무 짧습니다.");
       chunks.forEach((c) => addSeg(c.pcm, c.startSec));
-      if (!cfg.current.title) setTitle(f.name.replace(/\.[^.]+$/, ""));
+      // 파일 수정 시각(≈녹음 종료) - 길이 = 시작 시각. 비어 있을 때만 채움
+      if (f.lastModified) {
+        const end = new Date(f.lastModified);
+        const start = new Date(f.lastModified - (pcm.length / TARGET_RATE) * 1000);
+        setDate(isoDate(start));
+        setTime((t) => t || `${hm(start)}-${hm(end)}`);
+      }
     } catch (e) {
       setError(`파일을 읽지 못했습니다. m4a·mp3·wav·webm·mp4 파일을 사용해 주세요. (${(e as Error).message})`);
     } finally {
@@ -388,20 +406,27 @@ export default function Home() {
       const sections = mergeSections(all);
 
       setBusy("회의목적·결정사항·Action Item 정리 중…");
+      const needTitle = !mi.title;
+      const needPeople = !mi.participants.length;
       let frame = "";
       try {
-        frame = await callLLM("frame", frameDigest(mi, sections, meta), base);
+        frame = await callLLM("frame", frameDigest(mi, sections, meta, needPeople), { ...base, needTitle, needPeople });
       } catch (e) {
         if (e instanceof AuthError) throw e;
         // 실패해도 META로 기본 섹션을 채움
       }
 
-      const full = assemble(mi, sections, meta, frame);
+      // 비어 있던 제목·참석자는 AI 추정값으로 채우고 입력칸에도 반영
+      const fin = autoFill(mi, frame);
+      if (needTitle && fin.title) setTitle(fin.title);
+      if (needPeople && fin.participants.length) setPeople(fin.participants.join(", "));
+
+      const full = assemble(fin, sections, meta, frame);
       setMinutes(full);
 
       const item: HistoryItem = {
         id: String(Date.now()),
-        title: mi.title || "회의록",
+        title: fin.title || "회의록",
         date,
         minutes: full,
         transcript: text,
@@ -497,7 +522,7 @@ export default function Home() {
         <div className="row">
           <label className="field grow">
             <span>회의 제목</span>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 주간 스프린트 회의" />
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="비워두면 AI가 녹취 내용으로 지음" autoComplete="off" />
           </label>
           <label className="field">
             <span>날짜</span>
@@ -517,23 +542,25 @@ export default function Home() {
           </label>
           <label className="field">
             <span>시간</span>
-            <input value={time} onChange={(e) => setTime(e.target.value)} placeholder="15:25-16:40" />
+            <input value={time} onChange={(e) => setTime(e.target.value)} placeholder="녹음·업로드 시 자동" autoComplete="off" />
           </label>
           <label className="field grow">
             <span>장소</span>
-            <input value={place} onChange={(e) => setPlace(e.target.value)} placeholder="7층 대회의실" />
+            <input value={place} onChange={(e) => setPlace(e.target.value)} placeholder="7층 대회의실" autoComplete="off" />
           </label>
         </div>
         <label className="field mt">
-          <span>참석자 (쉼표로 구분 · 발언자 표기 정확도가 올라감)</span>
-          <input value={people} onChange={(e) => setPeople(e.target.value)} placeholder="대표님, Jonathan, Kevin, Daniel" />
+          <span>참석자 (쉼표로 구분 · 직접 넣으면 발언자 표기가 더 정확함)</span>
+          <input value={people} onChange={(e) => setPeople(e.target.value)} placeholder="비워두면 AI가 녹취에서 추정 · 예: 대표님, Jonathan, Daniel"
+            autoComplete="off"
+            name="mm-participants" />
         </label>
         <details className="settings">
           <summary>설정</summary>
           <div className="row">
             <label className="field">
               <span>작성자</span>
-              <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="박다솔 매니저" />
+              <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="박다솔 매니저" autoComplete="off" />
             </label>
             <label className="field">
               <span>인식 언어</span>

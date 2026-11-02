@@ -23,6 +23,7 @@ export type MeetingInfo = {
   participants: string[];
   author: string;
   type: MeetingType;
+  participantsGuessed?: boolean;
 };
 
 /** 서버(프롬프트)로 넘기는 문맥 */
@@ -37,6 +38,8 @@ export type PromptCtx = {
   total?: number;
   prevTitles?: string[];
   knownTerms?: string[];
+  needTitle?: boolean;
+  needPeople?: boolean;
 };
 
 export type Section = { title: string; content: string };
@@ -184,8 +187,24 @@ export function mergeSections(all: Section[]): Section[] {
 
 /* ---------- frame 입력 ---------- */
 
-export function frameDigest(info: MeetingInfo, sections: Section[], meta: Meta): string {
+/** 본문의 "- (이름) ..." 패턴에서 발언자 후보 추출 (많이 나온 순) */
+export function speakerCandidates(sections: Section[]): string[] {
+  const cnt = new Map<string, number>();
+  for (const s of sections)
+    for (const m of s.content.matchAll(/^\s*[-*]\s*\(([^()\n]{1,20})\)/gm)) {
+      const n = m[1].trim();
+      if (!n || /^(참석자|발언자 미상|불명확)$/.test(n)) continue;
+      cnt.set(n, (cnt.get(n) || 0) + 1);
+    }
+  return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25).map((e) => e[0]);
+}
+
+export function frameDigest(info: MeetingInfo, sections: Section[], meta: Meta, needPeople = false): string {
   const L: string[] = [];
+  if (needPeople) {
+    const c = speakerCandidates(sections);
+    L.push("[발언자 후보 (본문 괄호 표기)]", c.length ? c.join(", ") : "없음", "");
+  }
   L.push("[안건 (주요내용 제목)]");
   sections.forEach((s, i) => L.push(`${i + 1}. ${s.title}`));
   if (meta.gist.length) L.push("", "[구간별 요지]", ...meta.gist.map((g) => `- ${g}`));
@@ -201,7 +220,7 @@ export function frameDigest(info: MeetingInfo, sections: Section[], meta: Meta):
 
 /* ---------- 최종 조립 ---------- */
 
-function parseFrame(raw: string): Map<string, string> {
+export function parseFrame(raw: string): Map<string, string> {
   const map = new Map<string, string>();
   const text = raw.replace(/\r/g, "").replace(/^```[a-z]*\n?|```\s*$/gm, "");
   const parts = text.split(/^#{1,2}(?!#)\s*□?\s*/m);
@@ -211,7 +230,9 @@ function parseFrame(raw: string): Map<string, string> {
     const head = p.slice(0, nl).trim();
     const body = p.slice(nl + 1).trim();
     if (!head || !body) continue;
-    if (/목적/.test(head)) map.set("purpose", body);
+    if (/제목/.test(head)) map.set("title", body.split("\n")[0].replace(/^[-*\s\["'“]+|[\]"'”\s]+$/g, "").trim());
+    else if (/참석/.test(head)) map.set("people", body);
+    else if (/목적/.test(head)) map.set("purpose", body);
     else if (/결정/.test(head)) map.set("decisions", body);
     else if (/action|할\s*일/i.test(head)) map.set("actions", body);
     else if (/역할/.test(head)) map.set("roles", body);
@@ -242,7 +263,9 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
   ov.push(`**일시**: ${dateLabel(info.date)}${info.time ? `, ${info.time}` : ""}`);
   if (info.place) ov.push(`**장소**: ${info.place}`);
   if (info.participants.length)
-    ov.push(`**참석자**: 총 ${info.participants.length}명\n   - ${info.participants.join(", ")}`);
+    ov.push(
+      `**참석자**: 총 ${info.participants.length}명${info.participantsGuessed ? " (녹취 기준 추정)" : ""}\n   - ${info.participants.join(", ")}`
+    );
   out.push("", "## □ 회의 개요", ...ov.map((x, i) => `${i + 1}. ${x}`));
 
   // 회의목적
@@ -313,4 +336,24 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
     "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요."
   );
   return out.join("\n") + "\n";
+}
+
+/** 비어 있는 제목·참석자를 frame 결과로 채움 */
+export function autoFill(info: MeetingInfo, frameRaw: string): MeetingInfo {
+  const f = parseFrame(frameRaw);
+  const out = { ...info };
+  const t = f.get("title");
+  if (!out.title && t && !/^(미상|없음|\(?불명확\)?)$/.test(t)) out.title = t.slice(0, 80);
+  const p = f.get("people");
+  if (!out.participants.length && p) {
+    const names = p
+      .split(/[,，、\n]+/)
+      .map((x) => x.replace(/^[-*\s]+/, "").replace(/[()]/g, "").trim())
+      .filter((x) => x && x.length <= 20 && !/^(미상|없음|참석자|불명확)$/.test(x));
+    if (names.length) {
+      out.participants = [...new Set(names)];
+      out.participantsGuessed = true;
+    }
+  }
+  return out;
 }
