@@ -60,12 +60,13 @@ Safari로 접속 → 공유 버튼 → **홈 화면에 추가**
                                    ▼
  녹취록 (직접 수정 가능)
                                    ▼
- POST /api/summarize
-   짧으면: final 1회
-   길면:   3,500자씩 partial 요약 → 메모 merge → final
-           ※ 무료 한도(분당 8K 토큰) 안에 들어가도록 쪼갬
+ POST /api/summarize  (사내 회의록 작성 요령 양식)
+   body : 녹취록 2,800자 구간마다 → 주요내용 상세(발언자·용어설명·Q&A·수치) + META(요지/용어/결정/할일/역할/현황)
+   frame: META만 모아서 → 회의목적 · 결정사항 · Action Item 표 · (외부 미팅) 역할 분담
+   조립 : 같은 주제끼리 합치고 Meeting Result 양식으로 (회의 개요 · 회의목적 · 안건 · 주요 용어 · 주요내용 · 결정사항 · Action Item)
+          ※ 요청 1회 = 약 8K 토큰 이하 (Groq 무료 한도)
                                    ▼
- 회의록 (마크다운) → 복사 / .md 다운로드 / 브라우저에 기록 저장
+ 회의록 (마크다운) → 복사(Notion에 붙여넣기 OK) / .md 다운로드 / 브라우저에 기록 저장
 
 [서버: Next.js API Route]  API 키 보관 + 비밀번호 검사 + Groq 호출만 담당 (DB 없음)
 ```
@@ -80,7 +81,8 @@ app/api/transcribe/route.ts  Groq Whisper 프록시
 app/api/summarize/route.ts   Groq LLM 프록시
 lib/audio.ts                 녹음, 리샘플링(→16kHz), WAV 인코딩, 파일 디코딩
 lib/text.ts                  환각 문구 제거, 텍스트 분할, 마크다운 렌더
-lib/prompts.ts               회의록 프롬프트 (형식 바꾸려면 여기 수정)
+lib/prompts.ts               회의록 프롬프트 (작성 규칙 바꾸려면 여기)
+lib/minutes.ts               구간 결과 파싱 · 주제 병합 · 최종 양식 조립 (섹션 순서 바꾸려면 여기)
 ```
 
 ## 무료 한도 (Groq Free plan, 계정 단위)
@@ -102,6 +104,6 @@ lib/prompts.ts               회의록 프롬프트 (형식 바꾸려면 여기 
 ## 주의
 
 - 음성은 Groq(미국 서버)로 전송됨. 회사 회의는 보안 정책 먼저 확인
-- 화자 분리(누가 말했는지)는 지원 안 함
+- 화자 분리 기능은 없음. 발언자는 녹취 속 호칭·이름 + 입력한 참석자 명단으로 AI가 추정 → 모르면 (참석자)로 표기
 - 지난 회의록은 해당 브라우저 localStorage에만 저장됨 (기기 간 동기화 X)
 - Vercel Hobby는 개인·비상업 용도 전용

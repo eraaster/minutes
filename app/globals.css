@@ -419,37 +419,67 @@ textarea:focus {
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
+.doc h1 {
+  font-size: 22px;
+  text-align: center;
+  margin: 0;
+  padding: 14px 8px 2px;
+  background: var(--bg);
+  border-top: 3px solid var(--ink);
+}
+.doc h1 + h2 {
+  text-align: center;
+  font-size: 17px;
+  margin: 0;
+  padding: 0 8px 14px;
+  background: var(--bg);
+  border-bottom: 3px solid var(--ink);
+}
+.doc h1 + h2 + p {
+  text-align: right;
+  font-weight: 600;
+  font-size: 14px;
+}
 .doc h2 {
-  font-size: 20px;
-  margin: 4px 0 8px;
+  font-size: 17px;
+  margin: 26px 0 8px;
 }
 .doc h3 {
   font-size: 16px;
   margin: 20px 0 6px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
 }
 .doc h4 {
   font-size: 15px;
-  margin: 12px 0 4px;
-  color: var(--accent);
+  margin: 12px 0 4px 8px;
 }
-.doc ul,
-.doc ol {
-  margin: 4px 0;
-  padding-left: 20px;
+.doc p {
+  margin: 6px 0;
 }
-.doc li.sub {
-  margin-left: 18px;
-}
-.doc ul.tasks {
-  list-style: none;
-  padding-left: 0;
-}
-.doc li.task {
+.doc .li {
   display: flex;
   gap: 8px;
-  align-items: flex-start;
+  margin: 3px 0;
+}
+.doc .l0 {
+  margin-left: 8px;
+}
+.doc .l1 {
+  margin-left: 26px;
+}
+.doc .l2 {
+  margin-left: 44px;
+}
+.doc .l3 {
+  margin-left: 62px;
+}
+.doc .mk {
+  flex: none;
+  color: var(--muted);
+  min-width: 10px;
+}
+.doc .mk.num {
+  color: var(--ink);
+  font-weight: 600;
 }
 .doc .box {
   flex: none;
@@ -463,14 +493,45 @@ textarea:focus {
   background: var(--accent);
   border-color: var(--accent);
 }
-.doc p {
-  margin: 6px 0;
+.doc .tbl {
+  overflow-x: auto;
+  margin: 8px 0 12px;
+}
+.doc table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.doc th,
+.doc td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.doc th {
+  background: var(--bg);
+  white-space: nowrap;
+}
+.doc hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 24px 0 8px;
+}
+.doc hr + p {
+  color: var(--muted);
+  font-size: 13px;
 }
 .doc code {
   background: var(--bg);
   padding: 1px 5px;
   border-radius: 5px;
   font-size: 0.92em;
+}
+
+.mt {
+  margin-top: 12px;
 }
 
 .history ul {

@@ -1,80 +1,116 @@
-export type Stage = "partial" | "merge" | "final";
+import type { PromptCtx } from "./minutes";
 
-const COMMON = `규칙:
-- 녹취록에 없는 내용은 절대 지어내지 마세요. 확실하지 않으면 "(불명확)"이라고 표시하세요.
-- 음성 인식 오류로 보이는 단어는 문맥상 가장 자연스러운 표현으로 고쳐도 되지만, 고유명사·숫자·날짜는 들은 그대로 유지하세요.
-- 기술 용어와 제품명은 영어 원문 표기를 유지하세요.
-- 한국어로 작성하세요.`;
+export type Stage = "body" | "frame";
 
-export function systemPrompt(stage: Stage): string {
-  if (stage === "partial") {
-    return `당신은 회의 기록 담당자입니다. 긴 회의 녹취록의 일부 구간을 받아, 나중에 전체 회의록으로 합칠 수 있도록 핵심만 메모합니다.
+/**
+ * 회의록 작성 요령(사내 공지) 기준
+ *  - 불참자가 읽어도 회의 전체를 이해할 수 있게: 상세하게 / 명료하게 / 구조적으로
+ *  - 발언자 명시, 용어·약어 첫 등장 시 설명, 배경·맥락, 수치 정확히, Q&A 형식
+ *  - Action Item = 할 일·담당자·기한·완료
+ * ※ Groq 무료 한도(요청당 약 8K 토큰) 때문에 프롬프트를 짧게 유지
+ */
 
-출력 형식(마크다운 불릿만, 다른 말 없이):
-- 논의: ...
-- 결정: ...
-- 할 일: (담당자 / 기한 / 내용 — 언급된 경우만)
-- 미결: ...
-해당 항목이 없으면 그 줄은 생략하세요. 전체 600자 이내로 간결하게.
+const TYPE_LABEL: Record<PromptCtx["type"], string> = {
+  agenda: "내부 안건 회의",
+  external: "외부 미팅",
+  weekly: "주간회의",
+};
 
-${COMMON}`;
+export function systemPrompt(stage: Stage, ctx: PromptCtx): string {
+  if (stage === "body") {
+    const extra: string[] = [];
+    if (ctx.type === "external") extra.push("역할: 소속(회사/기관) | 담당 | 상세 내용 | 기한");
+    if (ctx.type === "weekly") {
+      extra.push("현황: 이름 | 업무/프로젝트 | 금주 수행 내용(구체적으로) | 진행률 | 상태(정상/지연/위험) | 차주 계획");
+      extra.push("피드백: (발언자) 피드백·지시 내용 [승인/반려/보류 중 해당 시]");
+    }
+
+    return `당신은 회의록 작성자입니다. 회의 녹취록의 한 구간을 받아 "회의에 참석하지 않은 사람도 이것만 읽고 회의 내용을 완전히 이해할 수 있도록" 주요내용을 상세히 작성합니다.
+
+[규칙]
+1. 상세하게: 논의 내용을 빠짐없이. 결론만 쓰지 말고 왜 그렇게 됐는지 근거·맥락·논의 과정까지.
+2. 발언자: 문장 앞에 (이름). 참석자 명단과 녹취록의 호칭("대표님", "Daniel 님" 등)으로 확실할 때만 이름을 쓰고, 모르면 (참석자). 추측 금지.
+3. 용어·약어: 처음 나올 때 괄호로 풀네임과 짧은 설명. 예) P&ID(Piping and Instrumentation Diagram, 배관·계장 도면). [이미 설명한 용어]는 다시 설명하지 않음.
+4. 수치·금액·일정·수량은 들은 그대로 정확히. 예) (사업예산) 9억 / (제출기한) ~2025.03.14(금)
+5. 질의응답은 Q&A로:
+- (질문자) 질문?
+  - (답변자) 답변
+6. 녹취록에 없는 내용은 절대 만들지 않음. 음성인식 오류는 문맥상 자연스럽게 고치되 고유명사·숫자는 그대로. 인사·잡담은 생략.
+7. 개조식 문체: "~함", "~임", "~예정", "~필요".
+
+[출력] 마크다운만, 다른 말 없이:
+### 주제 제목
+#### ○ 소주제 (필요할 때만)
+- (발언자) 내용
+  - 세부 내용
+
+- 주제 제목은 구체적으로. 나쁜 예) "기술 관련" / 좋은 예) "제안서 작성방향 (필수 목차, 기술 아키텍처)". 번호 붙이지 않음.
+- [앞 구간 주제]와 같은 주제가 이어지면 그 제목을 글자 그대로 다시 씀.
+
+본문 뒤에 ===META=== 한 줄을 쓰고, 해당하는 것만 한 줄에 하나씩:
+요지: 이 구간 핵심 한 문장
+용어: 약어 | 풀네임 | 한 줄 설명
+결정: (결정한 사람) 결정 내용
+할일: 구체적인 할 일 | 담당자 | 기한
+${extra.join("\n")}
+담당자·기한을 모르면 "미정". "다음 주 금요일" 같은 상대 날짜는 회의 일자 기준 MM/DD로 바꾸고 원래 표현을 괄호에.`.replace(/\n{3,}/g, "\n\n");
   }
-  if (stage === "merge") {
-    return `당신은 회의 기록 담당자입니다. 같은 회의의 여러 구간 메모를 받아, 중복을 합치고 시간 순서를 유지한 하나의 메모로 압축합니다.
 
-출력 형식(마크다운 불릿만, 다른 말 없이):
-- 논의: ...
-- 결정: ...
-- 할 일: ...
-- 미결: ...
-전체 1200자 이내.
+  const sections: string[] = [
+    `## □ 회의목적
+회의가 왜 소집됐는지 배경과 목적을 1~2문장으로 쓰고, 이어서 목적을 불릿으로 나열.
+나쁜 예) "프로젝트 관련 논의" / 좋은 예) "OO 개발 건 Kick-off 회의. 사업개요 공유, 제안서 작성방향 확정을 목적으로 진행."`,
+  ];
+  if (ctx.type === "weekly")
+    sections.push(`## □ 점검 및 피드백
+- (발언자) 피드백·지시 내용 [승인/반려/보류]`);
+  sections.push(`## □ 결정사항
+- (결정한 사람) 결정 내용`);
+  sections.push(`## □ Action Item
+| No. | 할 일 | 담당자 | 기한 | 완료 |
+|---|---|---|---|---|
+| 1 | 구체적인 할 일 | 이름 | MM/DD | |
+할 일은 구체적으로. 나쁜 예) "제안서 작성" / 좋은 예) "OO 제안서 PPT 초안 작성 (30p 이내)"`);
+  if (ctx.type === "external")
+    sections.push(`## □ 역할 분담
+### (소속명)
+| 담당 | 상세 내용 | 기한 |
+|---|---|---|
+소속(회사·기관)별로 표를 나눔.`);
 
-${COMMON}`;
-  }
-  return `당신은 회의록 작성 전문가입니다. 회의 녹취록 또는 구간별 메모를 바탕으로 깔끔한 회의록을 작성합니다.
+  return `당신은 회의록 작성자입니다. 회의 정보와 구간별 메모(안건, 요지, 결정·할일 후보)를 받아 회의록의 요약 섹션을 작성합니다.
 
-반드시 아래 마크다운 구조로만 출력하세요 (표는 사용하지 마세요):
+[규칙]
+- 자료에 없는 내용은 만들지 않음. 중복은 하나로 합침. 개조식 문체.
+- 담당자·기한을 모르면 "미정" (지어내지 말 것). 해당 내용이 없으면 "- 없음".
 
-## 한 줄 요약
-(회의 전체를 1~2문장으로)
+[출력] 마크다운만, 다른 말 없이, 아래 제목을 그대로 사용:
 
-## 주요 논의 내용
-### (주제 1)
-- ...
-### (주제 2)
-- ...
-
-## 결정 사항
-- ...
-
-## Action Items
-- [ ] 내용 — 담당: (이름 또는 "미정") / 기한: (날짜 또는 "미정")
-
-## 미결 사항 · 후속 논의
-- ...
-
-해당 내용이 없는 섹션은 "- 없음"으로 적으세요.
-
-${COMMON}`;
+${sections.join("\n\n")}`;
 }
 
-export function userPrompt(
-  stage: Stage,
-  text: string,
-  meta: { title?: string; date?: string; part?: number; total?: number }
-): string {
-  const head = [
-    meta.title ? `회의 제목: ${meta.title}` : null,
-    meta.date ? `회의 일자: ${meta.date}` : null,
+export function userPrompt(stage: Stage, text: string, ctx: PromptCtx): string {
+  const info = [
+    `회의 제목: ${ctx.title || "(미정)"}`,
+    `회의 유형: ${TYPE_LABEL[ctx.type]}`,
+    `회의 일자: ${ctx.dateLabel}${ctx.time ? ` ${ctx.time}` : ""}`,
+    ctx.place ? `장소: ${ctx.place}` : null,
+    `참석자 명단: ${ctx.participants.length ? ctx.participants.join(", ") : "(미입력)"}`,
   ]
     .filter(Boolean)
     .join("\n");
 
-  if (stage === "partial") {
-    return `${head}\n[녹취록 구간 ${meta.part}/${meta.total}]\n\n${text}`;
+  if (stage === "body") {
+    return `[회의 정보]
+${info}
+[앞 구간 주제] ${ctx.prevTitles?.length ? ctx.prevTitles.join(" / ") : "없음"}
+[이미 설명한 용어] ${ctx.knownTerms?.length ? ctx.knownTerms.join(", ") : "없음"}
+
+[녹취록 구간 ${ctx.part}/${ctx.total}]
+${text}`;
   }
-  if (stage === "merge") {
-    return `${head}\n[구간별 메모]\n\n${text}`;
-  }
-  return `${head}\n[자료]\n\n${text}`;
+  return `[회의 정보]
+${info}
+
+${text}`;
 }

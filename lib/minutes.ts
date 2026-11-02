@@ -1,0 +1,316 @@
+/**
+ * 회의록 조립 로직 (클라이언트 전용, 순수 함수)
+ *
+ * 파이프라인
+ *  1) body  : 녹취록을 ~2,800자 구간으로 나눠, 구간마다 "주요내용(상세)" + META(요지·용어·결정·할일…)를 받음
+ *  2) frame : META만 모아 회의목적·결정사항·Action Item·역할분담을 받음
+ *  3) assemble : 같은 주제 제목끼리 합치고, 회사 회의록 양식(Meeting Result)으로 조립
+ */
+
+export type MeetingType = "agenda" | "external" | "weekly";
+
+export const MEETING_TYPES: { value: MeetingType; label: string }[] = [
+  { value: "agenda", label: "안건 회의 (내부)" },
+  { value: "external", label: "외부 미팅 (고객사·기관)" },
+  { value: "weekly", label: "주간회의" },
+];
+
+export type MeetingInfo = {
+  title: string;
+  date: string; // yyyy-mm-dd
+  time: string; // "15:25-16:40"
+  place: string;
+  participants: string[];
+  author: string;
+  type: MeetingType;
+};
+
+/** 서버(프롬프트)로 넘기는 문맥 */
+export type PromptCtx = {
+  title: string;
+  dateLabel: string;
+  time: string;
+  place: string;
+  participants: string[];
+  type: MeetingType;
+  part?: number;
+  total?: number;
+  prevTitles?: string[];
+  knownTerms?: string[];
+};
+
+export type Section = { title: string; content: string };
+
+export type Meta = {
+  gist: string[];
+  terms: [string, string, string][];
+  decisions: string[];
+  actions: string[][];
+  roles: string[][];
+  status: string[][];
+  feedback: string[];
+};
+
+export const emptyMeta = (): Meta => ({
+  gist: [],
+  terms: [],
+  decisions: [],
+  actions: [],
+  roles: [],
+  status: [],
+  feedback: [],
+});
+
+/* ---------- 유틸 ---------- */
+
+const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+
+export function dateLabel(iso: string): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return `${m[1]}.${m[2]}.${m[3]}(${DOW[d.getDay()]})`;
+}
+
+export function parseParticipants(s: string): string[] {
+  return s
+    .split(/[,，、\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+export function normTitle(t: string): string {
+  return t
+    .replace(/^\s*(\d+[.)]\s*|[○□■●▶·-]\s*)+/, "")
+    .replace(/\*\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const key = (t: string) => normTitle(t).replace(/[\s()（）\[\]·,/]/g, "").toLowerCase();
+
+const cells = (s: string) => s.split("|").map((c) => c.trim());
+
+/* ---------- body 결과 파싱 ---------- */
+
+export function parseBody(raw: string): { sections: Section[]; metaLines: string[] } {
+  const text = raw.replace(/\r/g, "").replace(/^```[a-z]*\n?|```\s*$/gm, "");
+  const idx = text.search(/^\s*=+\s*META\s*=+\s*$/im);
+  const body = idx >= 0 ? text.slice(0, idx) : text;
+  const metaLines =
+    idx >= 0
+      ? text
+          .slice(idx)
+          .split("\n")
+          .slice(1)
+          .map((l) => l.trim())
+          .filter(Boolean)
+      : [];
+
+  const sections: Section[] = [];
+  let cur: Section | null = null;
+  for (const line of body.split("\n")) {
+    const h = line.match(/^#{2,3}\s+(.+)$/); // ## 또는 ### = 주제
+    if (h) {
+      cur = { title: normTitle(h[1]), content: "" };
+      sections.push(cur);
+      continue;
+    }
+    if (!cur) {
+      if (!line.trim()) continue;
+      cur = { title: "기타 논의", content: "" };
+      sections.push(cur);
+    }
+    cur.content += line + "\n";
+  }
+  for (const s of sections) s.content = s.content.replace(/^\n+|\s+$/g, "");
+  return { sections: sections.filter((s) => s.content), metaLines };
+}
+
+export function parseMeta(lines: string[], into: Meta = emptyMeta()): Meta {
+  for (const raw of lines) {
+    const line = raw.replace(/^[-*]\s*/, "");
+    const m = line.match(/^(요지|용어|결정|할일|할 일|역할|현황|피드백)\s*[:：]\s*(.+)$/);
+    if (!m) continue;
+    const [, k, v] = m;
+    if (/^(없음|해당 ?없음|-)$/.test(v.trim())) continue;
+    switch (k) {
+      case "요지":
+        into.gist.push(v);
+        break;
+      case "용어": {
+        const c = cells(v);
+        if (c[0] && !into.terms.some((t) => t[0].toLowerCase() === c[0].toLowerCase()))
+          into.terms.push([c[0], c[1] || "", c[2] || ""]);
+        break;
+      }
+      case "결정":
+        into.decisions.push(v);
+        break;
+      case "할일":
+      case "할 일":
+        into.actions.push(cells(v));
+        break;
+      case "역할":
+        into.roles.push(cells(v));
+        break;
+      case "현황":
+        into.status.push(cells(v));
+        break;
+      case "피드백":
+        into.feedback.push(v);
+        break;
+    }
+  }
+  return into;
+}
+
+/** 같은 주제(제목)는 처음 나온 위치에 이어 붙임 */
+export function mergeSections(all: Section[]): Section[] {
+  const out: Section[] = [];
+  const pos = new Map<string, number>();
+  for (const s of all) {
+    const k = key(s.title);
+    const i = pos.get(k);
+    if (i === undefined) {
+      pos.set(k, out.length);
+      out.push({ ...s });
+    } else {
+      out[i].content += "\n" + s.content;
+    }
+  }
+  return out;
+}
+
+/* ---------- frame 입력 ---------- */
+
+export function frameDigest(info: MeetingInfo, sections: Section[], meta: Meta): string {
+  const L: string[] = [];
+  L.push("[안건 (주요내용 제목)]");
+  sections.forEach((s, i) => L.push(`${i + 1}. ${s.title}`));
+  if (meta.gist.length) L.push("", "[구간별 요지]", ...meta.gist.map((g) => `- ${g}`));
+  if (meta.decisions.length) L.push("", "[결정 후보]", ...meta.decisions.map((d) => `- ${d}`));
+  if (meta.actions.length) L.push("", "[할일 후보] 할 일 | 담당자 | 기한", ...meta.actions.map((a) => `- ${a.join(" | ")}`));
+  if (info.type === "external" && meta.roles.length)
+    L.push("", "[역할 후보] 소속 | 담당 | 상세 내용 | 기한", ...meta.roles.map((r) => `- ${r.join(" | ")}`));
+  if (info.type === "weekly" && meta.feedback.length)
+    L.push("", "[피드백 후보]", ...meta.feedback.map((f) => `- ${f}`));
+  const s = L.join("\n");
+  return s.length > 6000 ? s.slice(0, 6000) + "\n…(이하 생략)" : s;
+}
+
+/* ---------- 최종 조립 ---------- */
+
+function parseFrame(raw: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const text = raw.replace(/\r/g, "").replace(/^```[a-z]*\n?|```\s*$/gm, "");
+  const parts = text.split(/^#{1,2}(?!#)\s*□?\s*/m);
+  for (const p of parts) {
+    const nl = p.indexOf("\n");
+    if (nl < 0) continue;
+    const head = p.slice(0, nl).trim();
+    const body = p.slice(nl + 1).trim();
+    if (!head || !body) continue;
+    if (/목적/.test(head)) map.set("purpose", body);
+    else if (/결정/.test(head)) map.set("decisions", body);
+    else if (/action|할\s*일/i.test(head)) map.set("actions", body);
+    else if (/역할/.test(head)) map.set("roles", body);
+    else if (/피드백|점검/.test(head)) map.set("feedback", body);
+  }
+  return map;
+}
+
+const esc = (s: string) => (s || "").replace(/\|/g, "/").replace(/\n/g, " ").trim();
+
+function table(head: string[], rows: string[][]): string {
+  return [
+    `| ${head.join(" | ")} |`,
+    `|${head.map(() => "---").join("|")}|`,
+    ...rows.map((r) => `| ${head.map((_, i) => esc(r[i] ?? "")).join(" | ")} |`),
+  ].join("\n");
+}
+
+export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, frameRaw: string): string {
+  const f = parseFrame(frameRaw);
+  const out: string[] = [];
+
+  out.push("# Meeting Result", `## [${info.title || "회의"}]`);
+  if (info.author) out.push(`작성자: ${info.author}`);
+
+  // 회의 개요
+  const ov: string[] = [];
+  ov.push(`**일시**: ${dateLabel(info.date)}${info.time ? `, ${info.time}` : ""}`);
+  if (info.place) ov.push(`**장소**: ${info.place}`);
+  if (info.participants.length)
+    ov.push(`**참석자**: 총 ${info.participants.length}명\n   - ${info.participants.join(", ")}`);
+  out.push("", "## □ 회의 개요", ...ov.map((x, i) => `${i + 1}. ${x}`));
+
+  // 회의목적
+  out.push("", "## □ 회의목적", f.get("purpose") || meta.gist.map((g) => `- ${g}`).join("\n") || "- (불명확)");
+
+  // 안건
+  if (sections.length) out.push("", "## □ 안건", ...sections.map((s, i) => `${i + 1}. ${s.title}`));
+
+  // 주요 용어
+  if (meta.terms.length)
+    out.push(
+      "",
+      "## □ 주요 용어",
+      table(
+        ["No.", "용어", "풀네임", "개념"],
+        meta.terms.map((t, i) => [String(i + 1), t[0], t[1], t[2]])
+      )
+    );
+
+  // 주요내용
+  out.push("", "## □ 주요내용");
+  sections.forEach((s, i) => out.push("", `### ${i + 1}. ${s.title}`, s.content));
+
+  // 주간회의: 업무 현황 + 피드백
+  if (info.type === "weekly") {
+    if (meta.status.length)
+      out.push(
+        "",
+        "## □ 업무 현황",
+        table(["이름", "업무", "금주 수행 내용", "진행률", "상태", "차주 계획"], meta.status)
+      );
+    const fb = f.get("feedback") || meta.feedback.map((x) => `- ${x}`).join("\n");
+    if (fb) out.push("", "## □ 점검 및 피드백", fb);
+  }
+
+  // 결정사항
+  out.push("", "## □ 결정사항", f.get("decisions") || meta.decisions.map((d) => `- ${d}`).join("\n") || "- 없음");
+
+  // Action Item
+  const ai =
+    f.get("actions") ||
+    (meta.actions.length
+      ? table(
+          ["No.", "할 일", "담당자", "기한", "완료"],
+          meta.actions.map((a, i) => [String(i + 1), a[0], a[1] || "미정", a[2] || "미정", ""])
+        )
+      : "- 없음");
+  out.push("", "## □ Action Item", ai);
+
+  // 외부 미팅: 역할 분담
+  if (info.type === "external") {
+    let roles = f.get("roles");
+    if (!roles && meta.roles.length) {
+      const by = new Map<string, string[][]>();
+      for (const r of meta.roles) {
+        const org = r[0] || "미정";
+        if (!by.has(org)) by.set(org, []);
+        by.get(org)!.push([r[1] || "미정", r[2] || "", r[3] || "미정"]);
+      }
+      roles = [...by.entries()].map(([org, rows]) => `### (${org})\n${table(["담당", "상세 내용", "기한"], rows)}`).join("\n\n");
+    }
+    if (roles) out.push("", "## □ 역할 분담", roles);
+  }
+
+  out.push(
+    "",
+    "---",
+    "※ 음성 녹음을 바탕으로 AI가 작성한 초안입니다. 발언자·수치·기한은 참석자 검토 후 확정하세요."
+  );
+  return out.join("\n") + "\n";
+}

@@ -12,18 +12,31 @@ import {
   splitToChunks,
 } from "@/lib/audio";
 import { cleanTranscript, mdToHtml, splitText } from "@/lib/text";
+import {
+  MEETING_TYPES,
+  MeetingInfo,
+  MeetingType,
+  PromptCtx,
+  Section,
+  assemble,
+  dateLabel,
+  emptyMeta,
+  frameDigest,
+  mergeSections,
+  parseBody,
+  parseMeta,
+  parseParticipants,
+} from "@/lib/minutes";
 
 /* ---------- 타입 & 상수 ---------- */
 
 type SegStatus = "queued" | "working" | "done" | "skipped" | "failed";
 type Seg = { id: number; startSec: number; durSec: number; status: SegStatus; text: string; error?: string };
 type HistoryItem = { id: string; title: string; date: string; minutes: string; transcript: string; createdAt: number };
-type Stage = "partial" | "merge" | "final";
 
-const LS = { pw: "mm-pw", lang: "mm-lang", hist: "mm-history" };
+const LS = { pw: "mm-pw", lang: "mm-lang", hist: "mm-history", author: "mm-author", type: "mm-type" };
 const SILENCE_RMS = 0.0015; // 이보다 조용한 100초 구간은 전사 생략
-const TEXT_CHUNK = 3500; // 요약 1회에 보낼 녹취록 글자 수 (Groq 무료 TPM 8K 기준)
-const MERGE_LIMIT = 4500;
+const TEXT_CHUNK = 2800; // 회의록 작성 1회에 보낼 녹취록 글자 수 (Groq 무료: 요청당 약 8K 토큰)
 
 class AuthError extends Error {}
 
@@ -64,6 +77,11 @@ const safeName = (s: string) => s.replace(/[\\/:*?"<>|]+/g, "_").trim() || "회�
 export default function Home() {
   const [mode, setMode] = useState<"record" | "upload">("record");
   const [title, setTitle] = useState("");
+  const [time, setTime] = useState("");
+  const [place, setPlace] = useState("");
+  const [people, setPeople] = useState("");
+  const [author, setAuthor] = useState("");
+  const [mtype, setMtype] = useState<MeetingType>("agenda");
   const [date, setDate] = useState(today());
   const [lang, setLang] = useState("ko");
   const [pw, setPw] = useState("");
@@ -94,11 +112,23 @@ export default function Home() {
   // useCallback 안에서 최신 값을 읽기 위한 ref
   const cfg = useRef({ pw, lang, title });
   cfg.current = { pw, lang, title };
+  const info = (): MeetingInfo => ({
+    title: title.trim(),
+    date,
+    time: time.trim(),
+    place: place.trim(),
+    participants: parseParticipants(people),
+    author: author.trim(),
+    type: mtype,
+  });
 
   /* ----- 초기 로드 ----- */
   useEffect(() => {
     setPw(lsGet(LS.pw) || "");
     setLang(lsGet(LS.lang) || "ko");
+    setAuthor(lsGet(LS.author) || "");
+    const t = lsGet(LS.type);
+    if (t === "agenda" || t === "external" || t === "weekly") setMtype(t);
     try {
       setHistory(JSON.parse(lsGet(LS.hist) || "[]"));
     } catch {
@@ -107,6 +137,8 @@ export default function Home() {
   }, []);
   useEffect(() => lsSet(LS.pw, pw), [pw]);
   useEffect(() => lsSet(LS.lang, lang), [lang]);
+  useEffect(() => lsSet(LS.author, author), [author]);
+  useEffect(() => lsSet(LS.type, mtype), [mtype]);
 
   /* ----- 세그먼트 상태 관리 ----- */
   const commit = (next: Seg[]) => {
@@ -306,71 +338,70 @@ export default function Home() {
     pump();
   };
 
-  /* ----- 회의록 생성 (긴 회의는 구간 요약 → 병합 → 최종) ----- */
-  const summarize = async (stage: Stage, text: string, extra: { part?: number; total?: number } = {}) => {
+  /* ----- 회의록 생성 -----
+   * 1) body : 녹취록 2,800자 구간마다 주요내용(상세) + META
+   * 2) frame: META를 모아 회의목적·결정사항·Action Item(·역할분담)
+   * 3) 같은 주제끼리 합쳐서 회사 양식으로 조립
+   */
+  const callLLM = async (stage: "body" | "frame", text: string, ctx: PromptCtx) => {
     const data = await callApi("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stage, text, title: cfg.current.title || undefined, date, ...extra }),
+      body: JSON.stringify({ stage, text, ctx }),
     });
     const c = (data.content || "").trim();
-    if (!c) throw new Error("요약 결과가 비어 있습니다. 다시 시도해 주세요.");
+    if (!c) throw new Error("AI 응답이 비어 있습니다. 다시 시도해 주세요.");
     return c as string;
   };
-
-  const totalSec = segs.reduce((n, s) => n + s.durSec, 0);
 
   const makeMinutes = async () => {
     const text = transcript.trim();
     if (!text) return;
     setError("");
     setMinutes("");
+    const mi = info();
+    const base = {
+      title: mi.title,
+      dateLabel: dateLabel(mi.date),
+      time: mi.time,
+      place: mi.place,
+      participants: mi.participants,
+      type: mi.type,
+    };
     try {
-      let body: string;
-      if (text.length <= TEXT_CHUNK * 1.3) {
-        setBusy("회의록을 작성하는 중…");
-        body = await summarize("final", text);
-      } else {
-        const parts = splitText(text, TEXT_CHUNK);
-        let notes: string[] = [];
-        for (let i = 0; i < parts.length; i++) {
-          setBusy(`구간별 요약 중… (${i + 1}/${parts.length})`);
-          notes.push(await summarize("partial", parts[i], { part: i + 1, total: parts.length }));
-        }
-        while (notes.length > 1 && notes.join("\n\n").length > MERGE_LIMIT) {
-          const groups: string[][] = [];
-          let cur: string[] = [];
-          let len = 0;
-          for (const n of notes) {
-            if (cur.length && len + n.length > MERGE_LIMIT) {
-              groups.push(cur);
-              cur = [];
-              len = 0;
-            }
-            cur.push(n);
-            len += n.length + 2;
-          }
-          if (cur.length) groups.push(cur);
-          if (groups.length >= notes.length) break; // 더 줄일 수 없음
-          const merged: string[] = [];
-          for (let g = 0; g < groups.length; g++) {
-            setBusy(`메모 병합 중… (${g + 1}/${groups.length})`);
-            merged.push(groups[g].length === 1 ? groups[g][0] : await summarize("merge", groups[g].join("\n\n")));
-          }
-          notes = merged;
-        }
-        setBusy("회의록을 작성하는 중…");
-        body = await summarize("final", notes.join("\n\n"));
+      const parts = splitText(text, TEXT_CHUNK);
+      const all: Section[] = [];
+      const meta = emptyMeta();
+      for (let i = 0; i < parts.length; i++) {
+        setBusy(`주요내용 작성 중… (${i + 1}/${parts.length})`);
+        const raw = await callLLM("body", parts[i], {
+          ...base,
+          part: i + 1,
+          total: parts.length,
+          prevTitles: [...new Set(all.map((s) => s.title))],
+          knownTerms: meta.terms.map((t) => t[0]),
+        });
+        const r = parseBody(raw);
+        all.push(...r.sections);
+        parseMeta(r.metaLines, meta);
+      }
+      const sections = mergeSections(all);
+
+      setBusy("회의목적·결정사항·Action Item 정리 중…");
+      let frame = "";
+      try {
+        frame = await callLLM("frame", frameDigest(mi, sections, meta), base);
+      } catch (e) {
+        if (e instanceof AuthError) throw e;
+        // 실패해도 META로 기본 섹션을 채움
       }
 
-      const head = [`# ${cfg.current.title || "회의록"}`, "", `- 일시: ${date}`];
-      if (totalSec > 0) head.push(`- 녹음 길이: ${fmtTime(totalSec)}`);
-      const full = `${head.join("\n")}\n\n${body}\n`;
+      const full = assemble(mi, sections, meta, frame);
       setMinutes(full);
 
       const item: HistoryItem = {
         id: String(Date.now()),
-        title: cfg.current.title || "회의록",
+        title: mi.title || "회의록",
         date,
         minutes: full,
         transcript: text,
@@ -387,6 +418,8 @@ export default function Home() {
     }
   };
 
+  const totalSec = segs.reduce((n, s) => n + s.durSec, 0);
+
   /* ----- 기타 액션 ----- */
   const newMeeting = async () => {
     if ((segs.length || transcript) && !minutes && !confirm("작성 중인 내용이 사라집니다. 새 회의를 시작할까요?")) return;
@@ -397,6 +430,9 @@ export default function Home() {
     setTranscript("");
     setMinutes("");
     setTitle("");
+    setTime("");
+    setPlace("");
+    setPeople("");
     setDate(today());
     setError("");
     setNotice("");
@@ -468,9 +504,37 @@ export default function Home() {
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </label>
         </div>
+        <div className="row mt">
+          <label className="field">
+            <span>회의 유형</span>
+            <select value={mtype} onChange={(e) => setMtype(e.target.value as MeetingType)}>
+              {MEETING_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>시간</span>
+            <input value={time} onChange={(e) => setTime(e.target.value)} placeholder="15:25-16:40" />
+          </label>
+          <label className="field grow">
+            <span>장소</span>
+            <input value={place} onChange={(e) => setPlace(e.target.value)} placeholder="7층 대회의실" />
+          </label>
+        </div>
+        <label className="field mt">
+          <span>참석자 (쉼표로 구분 · 발언자 표기 정확도가 올라감)</span>
+          <input value={people} onChange={(e) => setPeople(e.target.value)} placeholder="대표님, Jonathan, Kevin, Daniel" />
+        </label>
         <details className="settings">
           <summary>설정</summary>
           <div className="row">
+            <label className="field">
+              <span>작성자</span>
+              <input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="박다솔 매니저" />
+            </label>
             <label className="field">
               <span>인식 언어</span>
               <select value={lang} onChange={(e) => setLang(e.target.value)}>
@@ -678,8 +742,8 @@ export default function Home() {
       )}
 
       <footer className="foot">
-        음성은 Groq 서버(Whisper large-v3)로 전송되어 텍스트로 변환되고, 요약은 오픈소스 LLM(gpt-oss)이 작성합니다. 사내
-        기밀 회의는 회사 보안 정책을 먼저 확인하세요.
+        음성은 Groq 서버(Whisper large-v3)로 전송되어 텍스트로 변환되고, 회의록은 오픈소스 LLM(gpt-oss)이 작성합니다.
+        발언자 구분은 녹취 내용(호칭·이름)으로 추정하므로 반드시 검토하세요. 사내 기밀 회의는 회사 보안 정책을 먼저 확인하세요.
       </footer>
     </main>
   );

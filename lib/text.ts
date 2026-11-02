@@ -56,65 +56,71 @@ function inline(s: string) {
     .replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
+function splitRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim());
+}
+
+/** 회의록 전용 마크다운 렌더러: 제목, 불릿(들여쓰기 단계), 번호 목록, 표, 체크박스 */
 export function mdToHtml(md: string): string {
   const lines = md.replace(/\r/g, "").split("\n");
   const html: string[] = [];
-  let list: "ul" | "ol" | null = null;
-  const close = () => {
-    if (list) html.push(`</${list}>`);
-    list = null;
-  };
 
-  for (const raw of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
     const line = raw.trimEnd();
-    const indent = raw.length - raw.trimStart().length >= 2;
+    if (!line.trim()) continue;
+    const lead = raw.length - raw.trimStart().length;
+    const lvl = Math.min(3, Math.floor(lead / 2));
+    const t = line.trim();
     let m: RegExpMatchArray | null;
 
-    if (!line.trim()) {
-      close();
-      continue;
-    }
-    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
-      close();
-      const lvl = Math.min(4, m[1].length + 1); // # → h2
-      html.push(`<h${lvl}>${inline(m[2])}</h${lvl}>`);
-      continue;
-    }
-    if ((m = line.trim().match(/^[-*]\s+\[( |x|X)\]\s+(.*)$/))) {
-      if (list !== "ul") {
-        close();
-        html.push('<ul class="tasks">');
-        list = "ul";
+    // 표
+    if (t.startsWith("|")) {
+      const rows: string[][] = [];
+      let j = i;
+      while (j < lines.length && lines[j].trim().startsWith("|")) {
+        const r = splitRow(lines[j]);
+        if (!r.every((c) => /^:?-{2,}:?$/.test(c) || c === "")) rows.push(r);
+        j++;
       }
-      const done = m[1].toLowerCase() === "x";
+      i = j - 1;
+      if (!rows.length) continue;
+      const [head, ...body] = rows;
       html.push(
-        `<li class="task${indent ? " sub" : ""}"><span class="box${done ? " done" : ""}"></span><span>${inline(
-          m[2]
-        )}</span></li>`
+        `<div class="tbl"><table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${body
+          .map((r) => `<tr>${head.map((_, k) => `<td>${inline(r[k] ?? "")}</td>`).join("")}</tr>`)
+          .join("")}</tbody></table></div>`
       );
       continue;
     }
-    if ((m = line.trim().match(/^[-*]\s+(.*)$/))) {
-      if (list !== "ul") {
-        close();
-        html.push("<ul>");
-        list = "ul";
-      }
-      html.push(`<li${indent ? ' class="sub"' : ""}>${inline(m[1])}</li>`);
+    if ((m = t.match(/^(#{1,4})\s+(.*)$/))) {
+      const n = m[1].length;
+      html.push(`<h${n}>${inline(m[2])}</h${n}>`);
       continue;
     }
-    if ((m = line.trim().match(/^\d+[.)]\s+(.*)$/))) {
-      if (list !== "ol") {
-        close();
-        html.push("<ol>");
-        list = "ol";
-      }
-      html.push(`<li>${inline(m[1])}</li>`);
+    if (/^-{3,}$/.test(t)) {
+      html.push("<hr>");
       continue;
     }
-    close();
-    html.push(`<p>${inline(line)}</p>`);
+    if ((m = t.match(/^[-*]\s+\[( |x|X)\]\s+(.*)$/))) {
+      const done = m[1].toLowerCase() === "x";
+      html.push(`<div class="li l${lvl}"><span class="box${done ? " done" : ""}"></span><span>${inline(m[2])}</span></div>`);
+      continue;
+    }
+    if ((m = t.match(/^[-*•]\s+(.*)$/))) {
+      html.push(`<div class="li l${lvl}"><span class="mk">${lvl ? "–" : "•"}</span><span>${inline(m[1])}</span></div>`);
+      continue;
+    }
+    if ((m = t.match(/^(\d+[.)]|[①-⑳])\s*(.*)$/))) {
+      html.push(`<div class="li l${lvl}"><span class="mk num">${esc(m[1])}</span><span>${inline(m[2])}</span></div>`);
+      continue;
+    }
+    html.push(`<p class="l${lvl}">${inline(t)}</p>`);
   }
-  close();
   return html.join("\n");
 }
