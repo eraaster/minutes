@@ -27,22 +27,39 @@ export async function POST(req: Request) {
   const prompt = String(form.get("prompt") || "").slice(-200);
   const language = String(form.get("language") || "ko");
 
-  const out = new FormData();
-  out.append("file", file, "chunk.wav");
-  out.append("model", process.env.GROQ_STT_MODEL || "whisper-large-v3");
-  out.append("response_format", "json");
-  out.append("temperature", "0");
-  if (language !== "auto") out.append("language", language);
-  if (prompt) out.append("prompt", prompt);
+  // whisper-large-v3 한도가 차면 turbo로 (모델별 한도가 따로 있음)
+  const primary = process.env.GROQ_STT_MODEL || "whisper-large-v3";
+  const models = [...new Set([primary, "whisper-large-v3", "whisper-large-v3-turbo"])];
 
-  const res = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}` },
-    body: out,
-  });
+  let last: Response | null = null;
+  for (const model of models) {
+    const out = new FormData();
+    out.append("file", file, "chunk.wav");
+    out.append("model", model);
+    out.append("response_format", "json");
+    out.append("temperature", "0");
+    if (language !== "auto") out.append("language", language);
+    if (prompt) out.append("prompt", prompt);
 
-  if (!res.ok) return forwardGroqError(res);
-
-  const data = (await res.json()) as { text?: string };
-  return NextResponse.json({ text: (data.text || "").trim() });
+    const res = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}` },
+      body: out,
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { text?: string };
+      return NextResponse.json({ text: (data.text || "").trim(), model });
+    }
+    const msg = await res
+      .clone()
+      .json()
+      .then((b) => String(b?.error?.message || ""))
+      .catch(() => "");
+    // 분당 한도면 같은 모델로 기다렸다 재시도, 시간당·일일 오디오 한도면 다음 모델로
+    const longLimit = /per (hour|day)|\((ASH|ASD|RPD)\)/i.test(msg);
+    if (res.status === 429 && !longLimit) return forwardGroqError(res);
+    if (res.status !== 429 && res.status !== 404 && res.status < 500) return forwardGroqError(res);
+    last = res;
+  }
+  return forwardGroqError(last!);
 }

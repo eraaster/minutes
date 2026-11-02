@@ -35,28 +35,89 @@ export async function POST(req: Request) {
     knownTerms: (body.ctx.knownTerms || []).slice(-40),
   };
 
-  const model = process.env.GROQ_LLM_MODEL || "openai/gpt-oss-120b";
-  const payload: Record<string, unknown> = {
-    model,
-    temperature: 0.2,
-    max_completion_tokens: MAX_OUT[body.stage],
-    messages: [
-      { role: "system", content: systemPrompt(body.stage, ctx) },
-      { role: "user", content: userPrompt(body.stage, body.text, ctx) },
-    ],
-  };
-  // gpt-oss는 reasoning 모델 → 추론 토큰도 한도를 먹으므로 낮게
-  if (model.startsWith("openai/gpt-oss")) payload.reasoning_effort = "low";
+  const messages = [
+    { role: "system", content: systemPrompt(body.stage, ctx) },
+    { role: "user", content: userPrompt(body.stage, body.text, ctx) },
+  ];
 
-  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  // 모델별로 무료 한도가 따로 있음 → 한도 초과·모델 없음이면 다음 모델로
+  let last: Response | null = null;
+  let lastMsg = "";
+  for (const model of modelList()) {
+    const payload: Record<string, unknown> = {
+      model,
+      temperature: 0.2,
+      max_completion_tokens: MAX_OUT[body.stage],
+      messages,
+    };
+    // gpt-oss는 reasoning 모델 → 추론 토큰도 한도를 먹으므로 낮게
+    if (model.startsWith("openai/gpt-oss")) payload.reasoning_effort = "low";
 
-  if (!res.ok) return forwardGroqError(res);
+    let res: Response;
+    try {
+      res = await fetch(`${GROQ_BASE}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      continue;
+    }
 
-  const data = await res.json();
-  const content: string = data?.choices?.[0]?.message?.content?.trim() || "";
-  return NextResponse.json({ content, truncated: data?.choices?.[0]?.finish_reason === "length" });
+    if (res.ok) {
+      const data = await res.json();
+      const raw: string = data?.choices?.[0]?.message?.content || "";
+      // Qwen 등 일부 모델은 <think>…</think> 추론을 본문에 섞어 보냄 → 제거
+      const content = raw.replace(/<think>[\s\S]*?(<\/think>|$)/gi, "").trim();
+      if (!content) continue;
+      return NextResponse.json({
+        content,
+        model,
+        truncated: data?.choices?.[0]?.finish_reason === "length",
+      });
+    }
+
+    const msg = await res
+      .clone()
+      .json()
+      .then((b) => String(b?.error?.message || ""))
+      .catch(() => "");
+    // 분당 한도(TPM/RPM)면 같은 모델로 잠깐 기다리는 게 나음 → 클라이언트가 retry-after 만큼 대기 후 재시도
+    // 일일 한도(TPD/RPD)만 다음 모델로 넘김
+    const daily = /per day|\((TPD|RPD)\)/i.test(msg);
+    if (res.status === 429 && !daily) return forwardGroqError(res);
+    const skippable =
+      res.status === 429 || // 일일 한도 초과
+      res.status === 413 || // 이 모델 한도로는 요청이 너무 큼
+      res.status === 404 ||
+      res.status >= 500 ||
+      /model|decommission|not found|does not exist|not supported/i.test(msg);
+    if (!skippable) return forwardGroqError(res);
+    // 다음 모델 시도. 모두 실패하면 마지막 429를 돌려줘서 클라이언트가 기다렸다 재시도
+    if (!last || res.status === 429) {
+      last = res;
+      lastMsg = msg;
+    }
+  }
+
+  if (last) return forwardGroqError(last);
+  return NextResponse.json({ error: lastMsg || "사용 가능한 모델이 없습니다." }, { status: 503 });
 }
+
+/** GROQ_LLM_MODELS(쉼표 구분) 순서대로 시도. 예전 GROQ_LLM_MODEL도 맨 앞에 반영 */
+function modelList(): string[] {
+  const list = (process.env.GROQ_LLM_MODELS || DEFAULT_MODELS.join(","))
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const first = process.env.GROQ_LLM_MODEL?.trim();
+  return [...new Set(first ? [first, ...list] : list)];
+}
+
+// 전부 Hugging Face에 공개된 오픈 웨이트 모델. Groq에 없는 모델은 자동으로 건너뜀
+const DEFAULT_MODELS = [
+  "openai/gpt-oss-120b",
+  "llama-3.3-70b-versatile",
+  "qwen/qwen3-32b",
+  "openai/gpt-oss-20b",
+];

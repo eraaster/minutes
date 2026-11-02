@@ -186,6 +186,12 @@ export default function Home() {
       if (res.status === 429 || res.status >= 500) {
         const ra = Number(res.headers.get("retry-after"));
         const sec = Number.isFinite(ra) && ra > 0 ? Math.ceil(ra) : Math.min(60, 4 * 2 ** attempt);
+        if (res.status === 429 && sec > 180) {
+          const mins = Math.ceil(sec / 60);
+          throw new Error(
+            `오늘 무료 사용 한도를 모두 썼습니다. 약 ${mins >= 60 ? `${Math.ceil(mins / 60)}시간` : `${mins}분`} 뒤에 다시 시도해 주세요. (녹취록은 그대로 남아 있습니다)`
+          );
+        }
         setWaitMsg(`무료 사용 한도에 걸려 ${sec}초 기다린 뒤 다시 시도합니다…`);
         await sleep((sec + 1) * 1000);
         setWaitMsg("");
