@@ -513,7 +513,7 @@ export default function Home() {
       const all: Section[] = [];
       const meta = emptyMeta();
       for (let i = 0; i < parts.length; i++) {
-        setBusy(`주요내용 작성 중… (${i + 1}/${parts.length})`);
+        setBusy(`회의록 작성 중… ${Math.round((i / (parts.length + 1)) * 100)}%`);
         const raw = await callLLM("body", parts[i], {
           ...base,
           part: i + 1,
@@ -528,7 +528,7 @@ export default function Home() {
       }
       const sections = mergeSections(all);
 
-      setBusy("회의목적·결정사항·Action Item 정리 중…");
+      setBusy(`회의록 작성 중… ${Math.round((parts.length / (parts.length + 1)) * 100)}% (마무리 정리)`);
       const needTitle = !mi.title;
       const needPeople = !mi.participants.length;
       let frame = "";
@@ -632,7 +632,9 @@ export default function Home() {
 
   /* ----- 화면 상태 ----- */
   const started = segs.length > 0 || recState !== "idle" || !!busy || fromHistory;
-  const finished = segs.filter((s) => s.status !== "queued" && s.status !== "working").length;
+  // 받아쓰기 진행률 (%) — 녹음 길이 기준
+  const doneSec = segs.filter((s) => s.status !== "queued" && s.status !== "working").reduce((n, s) => n + s.durSec, 0);
+  const sttPct = totalSec > 0 ? Math.min(100, Math.round((doneSec / totalSec) * 100)) : 0;
   const failed = segs.filter((s) => s.status === "failed").length;
   const canSummarize = recState === "idle" && pending === 0 && !busy && transcript.trim().length > 0;
 
@@ -918,8 +920,13 @@ export default function Home() {
           <div className="sectionhead">
             <h2>받아쓰기</h2>
             <span className="muted">
-              {finished}/{segs.length} 구간 · {fmtTime(totalSec)}
+              {recState !== "idle" ? "녹음 중 · " : ""}
+              <b className="pct">{sttPct}%</b>
+              {sttPct === 100 && recState === "idle" ? " 완료" : ""} · 녹음 {fmtTime(totalSec)}
             </span>
+          </div>
+          <div className="progress" role="progressbar" aria-valuenow={sttPct} aria-valuemin={0} aria-valuemax={100}>
+            <span style={{ width: `${sttPct}%` }} />
           </div>
           <div className="segbar" aria-hidden>
             {segs.map((s) => (

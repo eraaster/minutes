@@ -744,3 +744,22 @@ a.btn {
   margin-top: 4px;
   overflow-wrap: anywhere;
 }
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.pct {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
