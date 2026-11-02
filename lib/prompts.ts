@@ -75,7 +75,7 @@ ${extra.join("\n")}
     sections.push(`## □ 점검 및 피드백
 - (발언자) 피드백·지시 내용 [승인/반려/보류]`);
   sections.push(`## □ 결정사항
-- (결정한 사람 이름) 결정 내용   ← 이름을 모르면 (참석자). "(발언자)"라고 쓰지 말 것`);
+- 결정 내용   ← 결정한 사람이 녹취에서 분명하면 앞에 (이름). 모르면 이름 없이 내용만. "미정"·"(참석자)"·"(발언자)"를 앞에 붙이지 말 것`);
   sections.push(`## □ Action Item
 | No. | 할 일 | 담당자 | 기한 | 완료 |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ export function userPrompt(stage: Stage, text: string, ctx: PromptCtx): string {
   if (stage === "body") {
     return `[회의 정보]
 ${info}
-[앞 구간 주제] ${ctx.prevTitles?.length ? ctx.prevTitles.join(" / ") : "없음"}
+[앞 구간 주제] ${ctx.prevTitles?.length ? ctx.prevTitles.join(" / ") : "없음"}  ← 이 구간 첫 부분이 이 이야기의 연속일 때만 같은 제목 사용
 [이미 설명한 용어] ${ctx.knownTerms?.length ? ctx.knownTerms.join(", ") : "없음"}
 
 [녹취록 구간 ${ctx.part}/${ctx.total}]

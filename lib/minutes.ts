@@ -147,7 +147,9 @@ export function parseMeta(lines: string[], into: Meta = emptyMeta()): Meta {
         break;
       case "용어": {
         const c = cells(v);
-        if (c[0] && !into.terms.some((t) => t[0].toLowerCase() === c[0].toLowerCase()))
+        // 약어·영문 전문용어만 (한글 단어는 음성인식 오류를 용어로 착각하는 경우가 많음)
+        const isTerm = /[A-Z]/.test(c[0] || "") && !/[가-힣]/.test(c[0] || "") && (c[0] || "").length <= 30;
+        if (isTerm && !into.terms.some((t) => t[0].toLowerCase() === c[0].toLowerCase()))
           into.terms.push([c[0], c[1] || "", c[2] || ""]);
         break;
       }
@@ -174,17 +176,12 @@ export function parseMeta(lines: string[], into: Meta = emptyMeta()): Meta {
 
 /** 같은 주제(제목)는 처음 나온 위치에 이어 붙임 */
 export function mergeSections(all: Section[]): Section[] {
+  // 바로 앞과 같은 주제일 때만 합침 → 회의 진행 순서 유지
   const out: Section[] = [];
-  const pos = new Map<string, number>();
   for (const s of all) {
-    const k = key(s.title);
-    const i = pos.get(k);
-    if (i === undefined) {
-      pos.set(k, out.length);
-      out.push({ ...s });
-    } else {
-      out[i].content += "\n" + s.content;
-    }
+    const prev = out[out.length - 1];
+    if (prev && key(prev.title) === key(s.title)) prev.content += "\n" + s.content;
+    else out.push({ ...s });
   }
   return out;
 }
@@ -268,7 +265,9 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
   if (info.place) ov.push(`**장소**: ${info.place}`);
   if (info.participants.length)
     ov.push(
-      `**참석자**: 총 ${info.participants.length}명${info.participantsGuessed ? " (녹취 기준 추정)" : ""}\n   - ${info.participants.join(", ")}`
+      info.participantsGuessed
+        ? `**참석자**: 미입력 (녹취에서 이름이 언급된 사람: ${info.participants.join(", ")})`
+        : `**참석자**: 총 ${info.participants.length}명\n   - ${info.participants.join(", ")}`
     );
   out.push("", "## □ 회의 개요", ...ov.map((x, i) => `${i + 1}. ${x}`));
 
@@ -306,7 +305,10 @@ export function assemble(info: MeetingInfo, sections: Section[], meta: Meta, fra
   }
 
   // 결정사항
-  out.push("", "## □ 결정사항", f.get("decisions") || meta.decisions.map((d) => `- ${d}`).join("\n") || "- 없음");
+  const decisions = (f.get("decisions") || meta.decisions.map((d) => `- ${d}`).join("\n") || "- 없음")
+    // AI가 붙이는 "미정", "(참석자)", "(발언자)" 접두어 제거
+    .replace(/^(\s*[-*]\s*)(\(?(미정|참석자|발언자|미상)\)?\s*)+/gm, "$1");
+  out.push("", "## □ 결정사항", decisions);
 
   // Action Item
   const ai =

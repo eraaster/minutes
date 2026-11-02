@@ -518,7 +518,8 @@ export default function Home() {
           ...base,
           part: i + 1,
           total: parts.length,
-          prevTitles: [...new Set(all.map((s) => s.title))],
+          // 바로 앞 주제만 이어쓰기 후보로 줌 (예전 주제를 재사용해 순서가 뒤섞이는 것 방지)
+          prevTitles: all.length ? [all[all.length - 1].title] : [],
           knownTerms: meta.terms.map((t) => t[0]),
         });
         const r = parseBody(raw);
