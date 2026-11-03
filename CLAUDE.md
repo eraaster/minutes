@@ -19,7 +19,7 @@
 - `app/history/page.tsx` — 지난 회의록 (제목 검색, 열기 → 작성 화면에 불러오기, 삭제)
 - `lib/store.ts` — 화면 간 공유 상태 훅 `useStore` (계정·사전·기록·토스트·작성 화면 진행 상황), localStorage 읽기/쓰기. 키 이름은 예전 그대로
 - `app/api/transcribe/route.ts` — Whisper 프록시. 반복 환각 감지 시 temperature 올려 1회 재시도, `suspect` 플래그
-- `app/api/summarize/route.ts` — LLM 프록시. stage `body` / `frame` / `fix`(녹취록 교정), 모델 폴백, `fallbackFrom` 반환
+- `app/api/summarize/route.ts` — LLM 프록시. stage `body` / `regroup`(안건 재구성) / `frame` / `fix`(녹취록 교정), 모델 폴백, `fallbackFrom` 반환
 - `lib/audio.ts` — 마이크 녹음(AudioWorklet), 16kHz mono 리샘플, 90~110초 사이 가장 조용한 지점(50ms 창 RMS 최소)에서 WAV 청크 분할(Vercel 4.5MB 요청 한도 회피). 녹음(`MicRecorder`)·업로드(`splitToChunks`) 공통
 - `lib/minutes.ts`의 `groupMinorSections`(안건 6개 초과 시 짧은 안건을 "기타 공지 및 논의"로), `verifyDeadlines`(기한 열을 녹취록과 대조), `verifyBodyDates`(본문 날짜·연도·월을 녹취록과 대조, 근거 없으면 "(날짜 미정)"/연도 삭제), `speakerCandidates`(녹취에서 "OO님"으로 불린 이름만, 용어 사전·역할 단어 제외)
 - `lib/text.ts` — 환각 문구·반복 제거(`cleanTranscript`, `repetitionScore`), 텍스트 분할, 마크다운 렌더러(`mdToHtml`)
@@ -41,20 +41,23 @@
 - **둘 다 비면 `[배경]` 헤더와 규칙을 프롬프트에 아예 넣지 않음** (토큰 낭비 + 배경을 지어낼 빌미). 테스트 `lib/prompts.test.ts`
 
 ## 받아쓰기·교정
-- Whisper prompt(`whisperPrompt`) = 회의 제목 + 회의 메모 앞 60자 + 사전의 용어 이름들, 200자 이내, 빈 값은 뺌. 고정 배경은 넣지 않음
+- Whisper prompt(`whisperPrompt`) = 자연스러운 문장 하나 `제목. 이 회의에서는 A, B 같은 용어가 나온다.`, 100자 이내(제목 40자, 안 들어가는 용어는 뺌). 쉼표 나열은 무음 구간에서 그대로 받아쓰임. 회의 메모·고정 배경은 넣지 않음
+- 프롬프트 유출 제거(`stripPromptLeak`, lib/text.ts): `cleanTranscript` 다음 `applyGlossary` 전. prompt 문장과 80% 이상 같은 문장(10자 미만 제목은 비교 제외), prompt에 넣은 용어 3개 이상이 쉼표·공백으로만 이어진 구간을 삭제. 조사가 붙으면("트러블이") 실제 발화로 보고 남김. 테스트 `lib/text.test.ts`
 - "녹취록 교정" 버튼: 2,800자 구간마다 `fix` 호출, 사전에 있는 용어의 오인식만 수정(temperature 0). 사전에 없는 단어는 추측 교정 금지(부들량→부드러움, 장품→장비 등). 관련 사전 항목이 없는 구간은 AI를 호출하지 않음. 구간별 안전장치(`rejectFix`, lib/text.ts): 잘림·생략 표시 추가·길이 0.9~1.1 밖·문자 유사도 0.85 미만·타임스탬프 변경 시 원문 유지. 단어 단위 diff(`wordDiff`)로 "바뀐 부분 N곳" 목록 + 항목별 되돌리기, "되돌리기"로 전체 복구
 - 429 대기가 20초 미만이면 조용히 재시도, 20초 이상만 "잠시 대기 중… N초" 표시
 
 ## 회의록 생성 흐름
 1. 녹취록을 2,800자(간결 모드 4,000자) 구간으로 나눔
 2. 구간마다 `body` 호출 → `### 주제` 본문 + `===META===` (요지/용어/결정/할일/역할/현황/피드백)
-3. META만 모아 `frame` 1회 호출 → 회의 제목·참석자(비었을 때), 회의목적, 결정사항, Action Item 표
-4. `assemble()`이 양식으로 조립: 회의 개요 → 회의목적 → 안건 → 주요 용어 → 주요내용 → 결정사항 → Action Item (→ 역할 분담/업무 현황)
+3. 안건 제목 + 구간별 요지만 `regroup` 1회 호출(`regroupDigest`, 6,000자 이내) → `{원래제목: 새안건}` JSON으로 4~7개 안건 재구성(`parseRegroup`, `applyRegroup`). 순서는 각 안건의 첫 등장 순(단, "기타"는 `groupMinorSections`가 맨 끝으로), 다른 제목이 합쳐지면 원래 제목을 `#### ○`로 남김. 응답에서 빠진 제목은 제 제목으로 유지. 호출·파싱 실패 또는 7개 초과면 기존 안건 그대로. 테스트 `lib/minutes.test.ts`
+4. META만 모아 `frame` 1회 호출 → 회의 제목·참석자(비었을 때), 회의목적, 결정사항(실제 합의·지시된 것만 3~6개, 논의만 된 것 제외), Action Item 표
+5. `assemble()`이 양식으로 조립: 회의 개요 → 회의목적 → 안건 → 주요 용어 → 주요내용 → 결정사항 → Action Item (→ 역할 분담/업무 현황)
 
 ## 지켜야 할 원칙
 - AI가 지어낸 정보 금지: 기한은 녹취에 근거가 있을 때만, 용어표는 영문 약어만, 발언자는 확실할 때만 이름
 - "(미정)" 같은 자리채움 값은 빈칸으로 취급 → AI 자동 입력
-- 앞 구간 전사문을 Whisper prompt로 넘기지 말 것 (환각이 전염됨) — 제목 + 회의 메모 앞부분 + 용어 사전만
+- 음성인식 오류로 뜻이 안 통하는 말은 해석하지 말고 생략, 근거 없는 약어 풀이 금지 (예: SST=보안 접속 터미널)
+- 앞 구간 전사문을 Whisper prompt로 넘기지 말 것 (환각이 전염됨) — 제목 + 용어 사전만
 - 무료 한도 고려: 요청 크기·출력 토큰 상한(`MAX_OUT`, `BRIEF_OUT`) 유지
 - 사용자는 한국어, 기술 용어는 영어 유지
 

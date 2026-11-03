@@ -42,6 +42,32 @@ export function cleanTranscript(text: string): string {
   return out.join(" ").replace(/\s+/g, " ").trim();
 }
 
+const LEAK_SIMILARITY = 0.8;
+const LEAK_REF_MIN = 10; // 짧은 제목("주간회의.")은 실제 발화일 수 있어 문장 비교에서 뺌
+
+/**
+ * Whisper가 무음 구간에서 prompt를 그대로 받아쓴 부분 제거 (cleanTranscript 다음에 호출).
+ *  - prompt 문장과 80% 이상 같은 문장
+ *  - prompt에 넣은 용어 3개 이상이 쉼표·공백으로만 이어진 구간. 조사가 붙으면("트러블이") 실제 발화로 봄
+ */
+export function stripPromptLeak(text: string, prompt: string, terms: string[]): string {
+  if (!prompt.trim()) return text;
+  const squeeze = (s: string) => s.replace(/\s+/g, "");
+  if (similarity(squeeze(text), squeeze(prompt)) >= LEAK_SIMILARITY) return ""; // 구간 전체가 prompt
+  const refs = sentencesOf(prompt).map(squeeze).filter((r) => r.length >= LEAK_REF_MIN);
+  const kept = sentencesOf(text)
+    .filter((s) => !refs.some((r) => similarity(squeeze(s), r) >= LEAK_SIMILARITY))
+    .join(" ");
+  const sent = terms.filter((t) => t.trim() && prompt.includes(t)).sort((a, b) => b.length - a.length);
+  if (!sent.length) return kept;
+  const alt = sent.map((t) => t.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*")).join("|");
+  const run = new RegExp(
+    `(?<![가-힣A-Za-z0-9])(?:${alt})(?:[\\s,，、]+(?:${alt})){2,}(?![가-힣A-Za-z0-9])[\\s,，、.。]*`,
+    "gi"
+  );
+  return kept.replace(run, " ").replace(/\s+/g, " ").replace(/^[\s,，、.。]+|[\s,，、]+$/g, "");
+}
+
 /** 문단/문장 경계 기준으로 limit 글자 이하 조각으로 나눔 */
 export function splitText(text: string, limit: number): string[] {
   const units = text

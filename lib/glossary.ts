@@ -99,17 +99,19 @@ export function applyGlossary(text: string, glossary: GlossaryEntry[]): { text: 
   return { text: out, count };
 }
 
-const WHISPER_MAX = 200;
-const MEMO_HEAD = 60; // 용어 자리를 남기기 위해 메모는 앞부분만
+const WHISPER_MAX = 100;
+const WHISPER_TITLE_MAX = 40; // 용어 자리를 남김
 
-/** Whisper 힌트: "회의 제목. 메모 앞부분. 용어1, 용어2, …" 200자 이내 (용어가 중간에 잘리지 않게). 빈 값은 뺌 */
-export function whisperPrompt(title: string, memo: string, terms: string[]): string {
-  const m = clean(memo);
-  const head = m.length <= MEMO_HEAD ? m : m.slice(0, MEMO_HEAD).replace(/\s+\S*$/, "");
-  const s = [clean(title), head, terms.join(", ")].filter(Boolean).join(". ");
-  if (s.length <= WHISPER_MAX) return s;
-  const cut = s.slice(0, WHISPER_MAX);
-  return cut.replace(/[,.]?\s*[^,.]*$/, "") || cut;
+/**
+ * Whisper 힌트: "회의 제목. 이 회의에서는 A, B 같은 용어가 나온다." 100자 이내. 빈 값은 뺌.
+ * 쉼표 나열만 보내면 무음 구간에서 그대로 받아써서 문장으로 보냄. 안 들어가는 용어는 뺌 (중간에 자르지 않음)
+ */
+export function whisperPrompt(title: string, terms: string[]): string {
+  const t = clean(title).slice(0, WHISPER_TITLE_MAX);
+  const sentence = (list: string[]) => `${t ? `${t}. ` : ""}이 회의에서는 ${list.join(", ")} 같은 용어가 나온다.`;
+  const picked: string[] = [];
+  for (const term of terms) if (sentence([...picked, term]).length <= WHISPER_MAX) picked.push(term);
+  return picked.length ? sentence(picked) : t && `${t}.`;
 }
 
 /* ---------- 문맥 검색 ---------- */

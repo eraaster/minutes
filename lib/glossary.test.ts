@@ -16,21 +16,19 @@ import {
 
 const e = (term: string, variants: string[] = [], desc = ""): GlossaryEntry => ({ term, variants, desc });
 
-test("Whisper prompt: 제목 + 메모 앞부분 + 용어, 빈 값은 뺌", () => {
-  assert.equal(whisperPrompt("주간회의", "연구소장 진행", ["트러블", "R&R"]), "주간회의. 연구소장 진행. 트러블, R&R");
-  assert.equal(whisperPrompt("주간회의", "", ["트러블"]), "주간회의. 트러블");
-  assert.equal(whisperPrompt("주간회의", "  \n ", ["트러블"]), "주간회의. 트러블");
-  assert.equal(whisperPrompt("", "", []), "");
+test("Whisper prompt: 제목 + 용어 문장, 빈 값은 뺌", () => {
+  assert.equal(whisperPrompt("주간회의", ["트러블", "R&R"]), "주간회의. 이 회의에서는 트러블, R&R 같은 용어가 나온다.");
+  assert.equal(whisperPrompt("", ["트러블"]), "이 회의에서는 트러블 같은 용어가 나온다.");
+  assert.equal(whisperPrompt("주간회의", []), "주간회의.");
+  assert.equal(whisperPrompt("  \n ", []), "");
 });
 
-test("Whisper prompt: 200자 이내, 메모는 앞부분만, 용어는 중간에 안 잘림", () => {
+test("Whisper prompt: 100자 이내, 문장이 끝까지 있고 용어는 안 잘림", () => {
   const terms = Array.from({ length: 60 }, (_, i) => `용어${i}`);
-  const p = whisperPrompt("제목", "메모 ".repeat(100), terms);
-  assert.ok(p.length <= 200);
-  assert.ok(p.startsWith("제목. 메모 메모"));
-  assert.ok(p.includes("용어0, 용어1"));
-  assert.match(p, /용어\d+$/);
-  assert.equal(whisperPrompt("가".repeat(300), "", []).length, 200); // 구분자 없는 긴 제목도 비지 않음
+  const p = whisperPrompt("가".repeat(300), terms);
+  assert.ok(p.length <= 100, p);
+  assert.match(p, /용어0, 용어1.*용어\d+ 같은 용어가 나온다\.$/);
+  assert.ok(whisperPrompt("가".repeat(300), []).length <= 100);
 });
 
 test("한글을 자모로 분해", () => {

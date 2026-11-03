@@ -8,7 +8,7 @@ export const maxDuration = 60;
 /**
  * POST multipart/form-data
  *  - file: audio/wav 청크 (클라이언트에서 16kHz mono, 90~110초 단위로 잘라서 보냄 → 4.5MB 제한 회피)
- *  - prompt: 회의 제목 + 회의 메모 앞부분 + 사전의 용어 이름들 (200자 이내, 선택). 앞 구간 전사문은 넣지 않음
+ *  - prompt: 회의 제목 + 사전의 용어 이름들을 담은 문장 (100자 이내, 선택). 앞 구간 전사문은 넣지 않음
  *  - language: "ko" | "auto"
  */
 export async function POST(req: Request) {
@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   if (!(file instanceof Blob)) {
     return NextResponse.json({ error: "file이 없습니다." }, { status: 400 });
   }
-  const prompt = String(form.get("prompt") || "").slice(0, 200);
+  const prompt = String(form.get("prompt") || "").slice(0, 100);
   const language = String(form.get("language") || "ko");
 
   // whisper-large-v3 한도가 차면 turbo로 (모델별 한도가 따로 있음)

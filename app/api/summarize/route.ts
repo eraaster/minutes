@@ -11,8 +11,8 @@ type Body = { stage: Stage; text: string; ctx: PromptCtx };
 
 // 요청당 (입력 + 출력) 토큰이 Groq 무료 TPM(8K) 안에 들어가도록
 // fix(녹취록 교정)는 입력 길이만큼 출력이 나오므로 간결 모드와 무관하게 같은 상한
-const MAX_OUT: Record<Stage, number> = { body: 3200, frame: 2500, fix: 3500 };
-const BRIEF_OUT: Record<Stage, number> = { body: 1500, frame: 1500, fix: 3500 };
+const MAX_OUT: Record<Stage, number> = { body: 3200, frame: 2500, fix: 3500, regroup: 2000 };
+const BRIEF_OUT: Record<Stage, number> = { body: 1500, frame: 1500, fix: 3500, regroup: 2000 };
 const MAX_IN_CHARS = 7000;
 const MEMO_MAX = 300;
 
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => null)) as Body | null;
-  if (!body?.text || !["body", "frame", "fix"].includes(body.stage) || !body.ctx) {
+  if (!body?.text || !["body", "frame", "fix", "regroup"].includes(body.stage) || !body.ctx) {
     return NextResponse.json({ error: "잘못된 요청입니다." }, { status: 400 });
   }
   if (body.text.length > MAX_IN_CHARS) {

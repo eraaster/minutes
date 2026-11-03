@@ -13,7 +13,7 @@ const base: PromptCtx = {
   part: 1,
   total: 1,
 };
-const STAGES: Stage[] = ["body", "frame", "fix"];
+const STAGES: Stage[] = ["body", "frame", "fix", "regroup"];
 const RULE = "녹취에 없는 내용을 배경에서 가져와 회의록에 쓰지 말 것";
 
 for (const stage of STAGES) {
@@ -48,6 +48,20 @@ test("한쪽만 있으면 그 줄만", () => {
   const u2 = userPrompt("frame", "녹취", { ...base, background: "AI 회사" });
   assert.ok(u2.includes("[배경]\n회사·팀: AI 회사\n"));
   assert.ok(!u2.includes("이 회의:"));
+});
+
+test("body: 뜻이 안 통하는 말은 생략, 근거 없는 약어 풀이 금지 (상세·간결 모두)", () => {
+  for (const brief of [false, true]) {
+    const s = systemPrompt("body", { ...base, brief });
+    assert.ok(s.includes("의미가 통하지 않는 문장이나 단어는 해석하거나 뜻을 붙이지 말고 생략"));
+    assert.ok(s.includes("SST=보안 접속 터미널"));
+  }
+});
+
+test("frame: 결정사항은 합의·지시된 것만", () => {
+  const s = systemPrompt("frame", base);
+  assert.ok(s.includes("실제로 합의·지시된 것만 3~6개"));
+  assert.ok(s.includes("논의만 된 것은 결정사항에 넣지 말 것"));
 });
 
 test("[회의 정보] 바로 아래에 붙음", () => {

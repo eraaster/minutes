@@ -189,6 +189,62 @@ export function mergeSections(all: Section[]): Section[] {
   return out;
 }
 
+const REGROUP_INPUT_MAX = 6000;
+const REGROUP_MAX_AGENDAS = 7;
+
+/** 안건 재구성 요청문: 제목 전체 + 들어가는 만큼의 요지. 재구성할 게 없거나 제목만으로 넘치면 "" (호출 안 함) */
+export function regroupDigest(sections: Section[], gist: string[]): string {
+  if (sections.length < 2) return "";
+  let s = ["[안건 제목]", ...new Set(sections.map((x) => x.title))].join("\n");
+  if (s.length > REGROUP_INPUT_MAX) return "";
+  if (gist.length) s = `${s}\n\n[구간별 요지]\n${gist.map((g) => `- ${g}`).join("\n")}`.slice(0, REGROUP_INPUT_MAX);
+  return s;
+}
+
+/**
+ * {원래제목: 새안건} JSON 파싱. 키는 key()로 정규화해 돌려줌.
+ * 원래 제목과 하나도 안 맞거나 합친 뒤 안건이 7개를 넘으면 null (기존 방식으로 폴백).
+ * 응답에서 빠진 제목은 내용을 잃지 않도록 제 제목으로 남김.
+ */
+export function parseRegroup(raw: string, titles: string[]): Map<string, string> | null {
+  const from = raw.indexOf("{");
+  const to = raw.lastIndexOf("}");
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw.slice(from, to + 1));
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const known = new Set(titles.map(key));
+  const map = new Map<string, string>();
+  for (const [k, v] of Object.entries(obj)) {
+    const title = typeof v === "string" ? normTitle(v) : "";
+    if (title && known.has(key(k))) map.set(key(k), title);
+  }
+  if (!map.size) return null;
+  const agendas = new Set(titles.map((t) => key(map.get(key(t)) ?? t)));
+  return agendas.size > REGROUP_MAX_AGENDAS ? null : map;
+}
+
+/** 새 안건 기준으로 합침 (첫 등장 순). 다른 제목이 합쳐지면 원래 제목을 "#### ○"로 남김 */
+export function applyRegroup(sections: Section[], map: Map<string, string>): Section[] {
+  const groups = new Map<string, { title: string; items: Section[] }>();
+  for (const s of sections) {
+    const title = map.get(key(s.title)) ?? s.title;
+    const g = groups.get(key(title));
+    if (g) g.items.push(s);
+    else groups.set(key(title), { title, items: [s] });
+  }
+  return [...groups.values()].map(({ title, items }) => {
+    const mixed = new Set(items.map((s) => key(s.title))).size > 1;
+    const content = items
+      .map((s, i) => (mixed && (i === 0 || key(items[i - 1].title) !== key(s.title)) ? `#### ○ ${s.title}\n${s.content}` : s.content))
+      .join("\n\n");
+    return { title, content };
+  });
+}
+
 /**
  * 안건 과분할 방지: 안건이 6개를 넘으면 짧은 안건(불릿 2개 이하 & 300자 미만)을
  * 맨 끝 "기타 공지 및 논의"로 모음. 제목이 "기타"로 시작하는 안건은 항상 모음.

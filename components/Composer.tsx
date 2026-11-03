@@ -26,13 +26,14 @@ import {
   useHydrated,
   useStore,
 } from "@/lib/store";
-import { FixPart, applyFix, cleanTranscript, mdToHtml, rejectFix, splitText, wordDiff } from "@/lib/text";
+import { FixPart, applyFix, cleanTranscript, mdToHtml, rejectFix, splitText, stripPromptLeak, wordDiff } from "@/lib/text";
 import {
   MEETING_TYPES,
   MeetingInfo,
   MeetingType,
   PromptCtx,
   Section,
+  applyRegroup,
   assemble,
   autoFill,
   dateLabel,
@@ -43,6 +44,8 @@ import {
   parseBody,
   parseMeta,
   parseParticipants,
+  parseRegroup,
+  regroupDigest,
   speakerCandidates,
 } from "@/lib/minutes";
 
@@ -131,8 +134,8 @@ export default function Composer() {
   const [dragOver, setDragOver] = useState(false);
 
   // useCallback 안에서 최신 값을 읽기 위한 ref
-  const cfg = useRef({ pw, lang, title, groqKey, glossary, memo });
-  cfg.current = { pw, lang, title, groqKey, glossary, memo };
+  const cfg = useRef({ pw, lang, title, groqKey, glossary });
+  cfg.current = { pw, lang, title, groqKey, glossary };
   // "(미정)", "미정", "-" 같은 자리채움 값은 빈칸으로 취급 → AI 자동 입력 대상
   const blank = (v: string) => (/^[\s(（\[]*(미정|없음|미상|tbd|todo|-|\?)?[\s)）\]]*$/i.test(v) ? "" : v.trim());
   const info = (): MeetingInfo => ({
@@ -258,12 +261,14 @@ export default function Composer() {
 
         const fd = new FormData();
         fd.append("file", encodeWav(pcm), "chunk.wav");
-        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목 + 회의 메모 앞부분 + 용어 사전만 힌트로
-        fd.append("prompt", whisperPrompt(cfg.current.title, cfg.current.memo, cfg.current.glossary.map((e) => e.term)));
+        // 앞 구간 문장을 힌트로 넘기면 환각이 다음 구간으로 전염됨 → 회의 제목 + 용어 사전만 힌트로
+        const terms = cfg.current.glossary.map((e) => e.term);
+        const prompt = whisperPrompt(cfg.current.title, terms);
+        fd.append("prompt", prompt);
         fd.append("language", cfg.current.lang);
         try {
           const data = await callApi("/api/transcribe", { method: "POST", body: fd });
-          const cleaned = applyGlossary(cleanTranscript(data.text || ""), cfg.current.glossary).text;
+          const cleaned = applyGlossary(stripPromptLeak(cleanTranscript(data.text || ""), prompt, terms), cfg.current.glossary).text;
           patch(next.id, {
             status: "done",
             text: data.suspect ? (cleaned ? `${cleaned} (※ 인식 불확실 구간)` : "(※ 인식 불확실 구간)") : cleaned,
@@ -413,9 +418,10 @@ export default function Composer() {
   /* ----- 회의록 생성 -----
    * 1) body : 녹취록 2,800자 구간마다 주요내용(상세) + META
    * 2) frame: META를 모아 회의목적·결정사항·Action Item(·역할분담)
-   * 3) 같은 주제끼리 합쳐서 회사 양식으로 조립
+   * 3) regroup: 제목·요지만 보내 같은 주제끼리 4~7개 안건으로 재구성 (실패하면 기존 방식)
+   * 4) 회사 양식으로 조립
    */
-  const callLLM = async (stage: "body" | "frame", text: string, ctx: PromptCtx) => {
+  const callLLM = async (stage: "body" | "frame" | "regroup", text: string, ctx: PromptCtx) => {
     const data = await callApi("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -538,9 +544,20 @@ export default function Composer() {
         all.push(...r.sections);
         parseMeta(r.metaLines, meta);
       }
-      const sections = groupMinorSections(mergeSections(all));
-
       setBusy(`회의록 작성 중… ${Math.round((parts.length / (parts.length + 1)) * 100)}% (마무리 정리)`);
+      let merged = mergeSections(all);
+      const digest = regroupDigest(merged, meta.gist);
+      if (digest) {
+        try {
+          const map = parseRegroup(await callLLM("regroup", digest, base), merged.map((s) => s.title));
+          if (map) merged = applyRegroup(merged, map);
+        } catch (e) {
+          if (e instanceof AuthError) throw e;
+          // 실패해도 기존 안건 그대로 진행
+        }
+      }
+      const sections = groupMinorSections(merged);
+
       const needTitle = !mi.title;
       const needPeople = !mi.participants.length;
       // 참석자 후보: 녹취에서 "OO님"으로 불린 이름만, 용어 사전·주요 용어는 제외
