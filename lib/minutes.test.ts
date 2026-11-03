@@ -81,7 +81,7 @@ test("안건 마무리: 실제 사례 — 기타에 몰린 주제를 꺼내고, 
     sec("월간 프로젝트 공유", "- (대표) 월간 공유 방식 변경\n  - 격주 발표로 변경\n  - 자료는 사전 공유"),
     sec("종합원 현황", bullets("종합원 인원 현황", "종합원 채용 진행", "종합원 자리 이동")),
     sec("상호 존중", bullets("회의 중 발언 존중", "호칭 사용 원칙", "피드백 방식 논의")),
-    sec("전달 사항", bullets("레비님 헝가리 출장 후 내일 출근합니다", "신규 참석자 개인 질문 안내")),
+    sec("전달 사항", bullets("레비님 헝가리 출장 후 내일 출근함", "신규 참석자 개인 질문 안내")),
     sec("청소기", bullets("청소기 교체 예정 공지")),
   ];
   const origin = mergeSections(all);
@@ -133,6 +133,48 @@ test("안건 마무리: 중복 제거는 다른 안건 사이에서만, 숫자�
   assert.ok(out[1].content.includes("예산 8억"));
   assert.ok(out[1].content.includes("확인 필요"));
   assert.ok(out[1].content.includes("서버 증설 일정 공유함\n  - 새로 나온 세부 내용입니다"));
+});
+
+/** 두 안건에 불릿을 하나씩 두고 중복 제거 후 몇 개 남는지 */
+const survivors = (a: string, b: string, participants: string[] = []) =>
+  finalizeAgendas([sec("A", `- ${a}`), sec("B", `- ${b}`), sec("C", "- 다른 내용입니다 길게")], [], participants).flatMap((s) =>
+    s.content.split("\n").filter((l) => l === `- ${a}` || l === `- ${b}`)
+  ).length;
+const TAIL = "서버 증설 일정과 테스트 범위를 정리해서 회의 전까지 전체 구성원에게 공유하기로 함";
+
+test("중복 기준: 진짜 중복은 하나만 남음", () => {
+  const leavy = "레비님 헝가리 출장 후 내일 출근";
+  assert.equal(survivors(leavy, leavy), 1);
+  assert.equal(survivors(leavy, `${leavy}함`), 1);
+  assert.equal(survivors(`(대표) ${leavy}`, `(참석자) ${leavy}`), 1); // 이름이 아닌 발언자 표시는 무시
+  assert.equal(survivors(TAIL, `${TAIL}.`), 1);
+});
+
+test("중복 기준: 김 모듈장 / 이 모듈장은 둘 다 남음 (짧아도 길어도)", () => {
+  assert.equal(survivors("김 모듈장 일정 확인", "이 모듈장 일정 확인"), 2);
+  assert.equal(survivors(`김 모듈장 ${TAIL}`, `이 모듈장 ${TAIL}`), 2);
+});
+
+test("중복 기준: 이름·날짜·약어·숫자가 다르면 유사도 0.9가 넘어도 남음", () => {
+  for (const [a, b] of [
+    [`레비님 ${TAIL}`, `제이님 ${TAIL}`],
+    [`내일 ${TAIL}`, `모레 ${TAIL}`],
+    [`다음 주 ${TAIL}`, `이번 주 ${TAIL}`],
+    [`월요일 ${TAIL}`, `금요일 ${TAIL}`],
+    [`11월 3일 ${TAIL}`, `11월 4일 ${TAIL}`],
+    [`SSH ${TAIL}`, `VPN ${TAIL}`],
+    [`R&R ${TAIL}`, `P&ID ${TAIL}`],
+    [`예산 9억 ${TAIL}`, `예산 8억 ${TAIL}`],
+    [`(김철수님) ${TAIL}`, `(이영희님) ${TAIL}`],
+  ])
+    assert.equal(survivors(a, b), 2, a);
+  // 참석자 명단의 이름은 "님"이 없어도 구분
+  assert.equal(survivors(`홍길동 ${TAIL}`, `김철수 ${TAIL}`, ["홍길동", "김철수"]), 2);
+  assert.equal(survivors(`홍길동 ${TAIL}`, `홍길동 ${TAIL}.`, ["홍길동", "김철수"]), 1);
+});
+
+test("중복 기준: 유사도 0.9 미만은 남음", () => {
+  assert.equal(survivors("레비님 헝가리 출장 후 내일 출근", "레비님 헝가리 출장 후 내일 출근합니다"), 2);
 });
 
 test("재구성: 안건 수 제한에 기타는 세지 않음", () => {

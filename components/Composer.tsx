@@ -559,7 +559,7 @@ export default function Composer() {
           // 실패해도 기존 안건 그대로 진행
         }
       }
-      const sections = finalizeAgendas(groupMinorSections(merged), origin);
+      const sections = finalizeAgendas(groupMinorSections(merged), origin, mi.participants);
 
       const needTitle = !mi.title;
       const needPeople = !mi.participants.length;

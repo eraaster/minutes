@@ -298,7 +298,7 @@ export function groupMinorSections(sections: Section[]): Section[] {
 
 const MISC_MIN_AGENDAS = 3; // "기타"를 뺀 안건이 이보다 적으면 기타에서 꺼냄
 const MISC_MAX_BULLETS = 2; // 기타에 남을 수 있는 소주제의 불릿 수
-const DUP_SIMILARITY = 0.8;
+const DUP_SIMILARITY = 0.9;
 const DUP_MIN_CHARS = 8; // "확인 필요" 같은 짧은 불릿은 안건이 다르면 다른 얘기일 수 있음
 
 /** "#### ○ 소주제"로 나눔 (같은 소주제는 합침, 내용 없는 소제목은 뺌). 소제목 앞의 내용은 제목 "" */
@@ -336,24 +336,41 @@ function promoteFromMisc(sections: Section[], origin: Section[]): Section[] {
   return [...rest, ...promoted, ...(left.length ? [{ title: misc[0].title, content: leftover }] : [])];
 }
 
-const bulletKey = (line: string) => squash(line.match(/^\s*[-*]\s+(?:\([^)\n]*\)\s*)?(.*)$/)?.[1] ?? "");
+type Bullet = { key: string; tags: string };
 
-function sameBullet(a: string, b: string): boolean {
-  if (Math.min(a.length, b.length) / Math.max(a.length, b.length) < DUP_SIMILARITY) return false;
-  // "예산 9억"과 "예산 8억"은 글자가 비슷해도 다른 내용
-  if ((a.match(/\d+/g) || []).join() !== (b.match(/\d+/g) || []).join()) return false;
-  return similarity(a, b) >= DUP_SIMILARITY;
+const DATE_WORDS = String.raw`오늘|내일|모레|글피|어제|그제|금주|차주|(?:이번|다음|지난)\s*(?:주|달)|[월화수목금토일]요일`;
+
+/** 글자가 비슷해도 다르면 다른 내용인 표현: 사람 이름(참석자·"OO님"·"김 모듈장"의 성), 날짜, 영문 약어, 숫자 */
+function bulletTagRe(participants: string[]): RegExp {
+  const names = participants.map((p) => p.trim()).filter(Boolean).sort((a, b) => b.length - a.length).map(escRe);
+  return new RegExp(
+    [...names, String.raw`[가-힣A-Za-z]{2,}\s*님`, DATE_WORDS, String.raw`[A-Z][A-Z0-9&+._-]+`, String.raw`\d+`, String.raw`(?<!\S)[가-힣](?=\s)`].join("|"),
+    "g"
+  );
+}
+
+/** 비교할 글자에서는 발언자 표시를 빼고, 표현 비교에는 넣음 (이름이 다른 발언자의 같은 말은 남김) */
+function parseBullet(line: string, tagRe: RegExp): Bullet {
+  const text = line.match(/^\s*[-*]\s+(.*)$/)?.[1] ?? "";
+  return { key: squash(text.replace(/^\([^)\n]*\)\s*/, "")), tags: (text.match(tagRe) || []).map(squash).join("|") };
+}
+
+function sameBullet(a: Bullet, b: Bullet): boolean {
+  if (a.tags !== b.tags) return false;
+  if (Math.min(a.key.length, b.key.length) / Math.max(a.key.length, b.key.length) < DUP_SIMILARITY) return false;
+  return similarity(a.key, b.key) >= DUP_SIMILARITY;
 }
 
 /** 서로 다른 안건의 거의 같은 불릿은 먼저 나온 것만 남김. 하위 불릿이 남는 상위 불릿과, 빈 소제목·빈 안건은 정리 */
-function dedupeBullets(sections: Section[]): Section[] {
-  const seen: string[] = [];
+function dedupeBullets(sections: Section[], participants: string[]): Section[] {
+  const tagRe = bulletTagRe(participants);
+  const seen: Bullet[] = [];
   const indent = (l: string) => l.match(/^\s*/)![0].length;
   return sections.flatMap((s) => {
     const lines = s.content.split("\n");
-    const keys = lines.map(bulletKey);
-    const dup = keys.map((k) => k.length >= DUP_MIN_CHARS && seen.some((x) => sameBullet(k, x)));
-    seen.push(...keys.filter((k) => k.length >= DUP_MIN_CHARS));
+    const bullets = lines.map((l) => parseBullet(l, tagRe));
+    const dup = bullets.map((b) => b.key.length >= DUP_MIN_CHARS && seen.some((x) => sameBullet(b, x)));
+    seen.push(...bullets.filter((b) => b.key.length >= DUP_MIN_CHARS));
     if (!dup.includes(true)) return [s];
     const kept: string[] = [];
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -373,11 +390,11 @@ function dedupeBullets(sections: Section[]): Section[] {
  * 안건 마무리 (재구성 성공·실패와 무관하게 항상): 기타에서 꺼내기 → 순서 정리 → 중복 불릿 제거.
  * 순서는 첫 등장 순, 기타만 맨 끝. origin = 재구성 전 안건 (꺼낸 소주제의 등장 위치를 찾는 데 씀)
  */
-export function finalizeAgendas(sections: Section[], origin: Section[] = []): Section[] {
+export function finalizeAgendas(sections: Section[], origin: Section[] = [], participants: string[] = []): Section[] {
   const all = promoteFromMisc(sections, origin);
   const pos = (s: Section) => s.at ?? Number.MAX_SAFE_INTEGER;
   const ordered = all.filter((s) => !isMisc(s.title)).sort((a, b) => pos(a) - pos(b));
-  return dedupeBullets([...ordered, ...all.filter((s) => isMisc(s.title))]);
+  return dedupeBullets([...ordered, ...all.filter((s) => isMisc(s.title))], participants);
 }
 
 /* ---------- 기한 검증 (날조 방지) ---------- */
