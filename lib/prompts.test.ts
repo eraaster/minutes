@@ -62,6 +62,13 @@ test("body: 공지·전달 사항은 잡담으로 버리지 않음 (상세·간�
   for (const brief of [false, true]) assert.ok(systemPrompt("body", { ...base, brief }).includes("운영비·회식·점심·비품"));
 });
 
+test("regroup: 기타는 짧은 공지만, 목표는 기타를 뺀 4~7개", () => {
+  const s = systemPrompt("regroup", base);
+  assert.ok(s.includes("불릿 2개 이하의 짧은 공지만"));
+  assert.ok(s.includes("불릿 3개 이상 논의된 주제는 반드시 독립 안건"));
+  assert.ok(s.includes('"기타"를 뺀 안건 4~7개'));
+});
+
 test("frame: 결정사항은 합의·지시된 것만", () => {
   const s = systemPrompt("frame", base);
   assert.ok(s.includes("실제로 합의·지시된 것만 3~6개"));

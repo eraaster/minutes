@@ -8,6 +8,7 @@
  */
 
 import type { GlossaryEntry } from "./glossary";
+import { similarity } from "./text.ts";
 
 export type MeetingType = "agenda" | "external" | "weekly";
 
@@ -49,7 +50,8 @@ export type PromptCtx = {
   memo?: string; // 이 회의 메모 (선택)
 };
 
-export type Section = { title: string; content: string };
+// at: 녹취 진행상 첫 등장 위치 (mergeSections가 매김)
+export type Section = { title: string; content: string; at?: number };
 
 export type Meta = {
   gist: string[];
@@ -183,21 +185,26 @@ export function parseMeta(lines: string[], into: Meta = emptyMeta()): Meta {
 export function mergeSections(all: Section[]): Section[] {
   // 바로 앞과 같은 주제일 때만 합침 → 회의 진행 순서 유지
   const out: Section[] = [];
-  for (const s of all) {
+  all.forEach((s, at) => {
     const prev = out[out.length - 1];
     if (prev && key(prev.title) === key(s.title)) prev.content += "\n" + s.content;
-    else out.push({ ...s });
-  }
+    else out.push({ ...s, at });
+  });
   return out;
 }
 
 const REGROUP_INPUT_MAX = 6000;
 const REGROUP_MAX_AGENDAS = 7;
 
-/** 안건 재구성 요청문: 제목 전체 + 들어가는 만큼의 요지. 재구성할 게 없거나 제목만으로 넘치면 "" (호출 안 함) */
+const isMisc = (title: string) => /^기타/.test(normTitle(title));
+const bulletCount = (content: string) => (content.match(/^\s*[-*]\s/gm) || []).length;
+
+/** 안건 재구성 요청문: 제목 전체(불릿 수 포함) + 들어가는 만큼의 요지. 재구성할 게 없거나 제목만으로 넘치면 "" (호출 안 함) */
 export function regroupDigest(sections: Section[], gist: string[]): string {
   if (sections.length < 2) return "";
-  let s = ["[안건 제목]", ...new Set(sections.map((x) => x.title))].join("\n");
+  const counts = new Map<string, number>();
+  for (const x of sections) counts.set(x.title, (counts.get(x.title) || 0) + bulletCount(x.content));
+  let s = ["[안건 제목] 불릿 수 | 제목", ...[...counts].map(([t, n]) => `${n} | ${t}`)].join("\n");
   if (s.length > REGROUP_INPUT_MAX) return "";
   if (gist.length) s = `${s}\n\n[구간별 요지]\n${gist.map((g) => `- ${g}`).join("\n")}`.slice(0, REGROUP_INPUT_MAX);
   return s;
@@ -205,7 +212,7 @@ export function regroupDigest(sections: Section[], gist: string[]): string {
 
 /**
  * {원래제목: 새안건} JSON 파싱. 키는 key()로 정규화해 돌려줌.
- * 원래 제목과 하나도 안 맞거나 합친 뒤 안건이 7개를 넘으면 null (기존 방식으로 폴백).
+ * 원래 제목과 하나도 안 맞거나 합친 뒤 "기타"를 뺀 안건이 7개를 넘으면 null (기존 방식으로 폴백).
  * 응답에서 빠진 제목은 내용을 잃지 않도록 제 제목으로 남김.
  */
 export function parseRegroup(raw: string, titles: string[]): Map<string, string> | null {
@@ -225,7 +232,7 @@ export function parseRegroup(raw: string, titles: string[]): Map<string, string>
     if (title && known.has(key(k))) map.set(key(k), title);
   }
   if (!map.size) return null;
-  const agendas = new Set(titles.map((t) => key(map.get(key(t)) ?? t)));
+  const agendas = new Set(titles.map((t) => map.get(key(t)) ?? t).filter((t) => !isMisc(t)).map(key));
   return agendas.size > REGROUP_MAX_AGENDAS ? null : map;
 }
 
@@ -243,14 +250,14 @@ export function applyRegroup(sections: Section[], map: Map<string, string>): Sec
     const content = items
       .map((s, i) => (mixed && (i === 0 || key(items[i - 1].title) !== key(s.title)) ? `#### ○ ${s.title}\n${s.content}` : s.content))
       .join("\n\n");
-    return { title, content };
+    return { title, content, at: items[0].at };
   });
 }
 
 /** 재구성 전후 비교용: 불릿 수·글자 수 합계. applyRegroup이 덧붙이는 "####" 소제목 줄은 세지 않음 */
 function measure(sections: Section[]) {
   const body = sections.map((s) => s.content.replace(/^#{4,}.*$/gm, "")).join("\n");
-  return { bullets: (body.match(/^\s*[-*]\s/gm) || []).length, chars: body.replace(/\s/g, "").length };
+  return { bullets: bulletCount(body), chars: body.replace(/\s/g, "").length };
 }
 
 export function regroupLost(before: Section[], after: Section[]): boolean {
@@ -287,6 +294,90 @@ export function groupMinorSections(sections: Section[]): Section[] {
   if (!minor.length) return sections;
   const content = minor.map((s) => `#### ○ ${s.title}\n${s.content}`).join("\n\n");
   return [...keep, { title: MISC_TITLE, content }];
+}
+
+const MISC_MIN_AGENDAS = 3; // "기타"를 뺀 안건이 이보다 적으면 기타에서 꺼냄
+const MISC_MAX_BULLETS = 2; // 기타에 남을 수 있는 소주제의 불릿 수
+const DUP_SIMILARITY = 0.8;
+const DUP_MIN_CHARS = 8; // "확인 필요" 같은 짧은 불릿은 안건이 다르면 다른 얘기일 수 있음
+
+/** "#### ○ 소주제"로 나눔 (같은 소주제는 합침, 내용 없는 소제목은 뺌). 소제목 앞의 내용은 제목 "" */
+function splitSubtopics(content: string): Section[] {
+  const subs: Section[] = [];
+  let cur: Section | undefined;
+  for (const line of content.split("\n")) {
+    const h = line.match(/^#{4,}\s*(?:○\s*)?(.*)$/);
+    const title = h ? normTitle(h[1]) : "";
+    if (h || !cur) {
+      cur = subs.find((s) => key(s.title) === key(title));
+      if (!cur) subs.push((cur = { title, content: "" }));
+    }
+    if (!h) cur.content += `${line}\n`;
+  }
+  return subs.filter((s) => s.content.trim());
+}
+
+/** 기타 안의 소주제 중 불릿 3개 이상, 또는 안건이 3개 미만이면 큰 것부터 독립 안건으로 꺼냄 */
+function promoteFromMisc(sections: Section[], origin: Section[]): Section[] {
+  const rest = sections.filter((s) => !isMisc(s.title));
+  const misc = sections.filter((s) => isMisc(s.title));
+  if (!misc.length) return sections;
+  const subs = misc.flatMap((s) => splitSubtopics(s.content));
+  const movable = subs.filter((s) => s.title && !isMisc(s.title)).sort((a, b) => bulletCount(b.content) - bulletCount(a.content));
+  const take = movable.filter((s, i) => bulletCount(s.content) > MISC_MAX_BULLETS || rest.length + i < MISC_MIN_AGENDAS);
+  if (!take.length) return sections;
+  const promoted = take.map((s) => {
+    const content = s.content.trim();
+    const first = content.split("\n")[0];
+    return { title: s.title, content, at: origin.find((o) => o.content.includes(first))?.at };
+  });
+  const left = subs.filter((s) => !take.includes(s));
+  const leftover = left.map((s) => (s.title ? `#### ○ ${s.title}\n${s.content.trim()}` : s.content.trim())).join("\n\n");
+  return [...rest, ...promoted, ...(left.length ? [{ title: misc[0].title, content: leftover }] : [])];
+}
+
+const bulletKey = (line: string) => squash(line.match(/^\s*[-*]\s+(?:\([^)\n]*\)\s*)?(.*)$/)?.[1] ?? "");
+
+function sameBullet(a: string, b: string): boolean {
+  if (Math.min(a.length, b.length) / Math.max(a.length, b.length) < DUP_SIMILARITY) return false;
+  // "예산 9억"과 "예산 8억"은 글자가 비슷해도 다른 내용
+  if ((a.match(/\d+/g) || []).join() !== (b.match(/\d+/g) || []).join()) return false;
+  return similarity(a, b) >= DUP_SIMILARITY;
+}
+
+/** 서로 다른 안건의 거의 같은 불릿은 먼저 나온 것만 남김. 하위 불릿이 남는 상위 불릿과, 빈 소제목·빈 안건은 정리 */
+function dedupeBullets(sections: Section[]): Section[] {
+  const seen: string[] = [];
+  const indent = (l: string) => l.match(/^\s*/)![0].length;
+  return sections.flatMap((s) => {
+    const lines = s.content.split("\n");
+    const keys = lines.map(bulletKey);
+    const dup = keys.map((k) => k.length >= DUP_MIN_CHARS && seen.some((x) => sameBullet(k, x)));
+    seen.push(...keys.filter((k) => k.length >= DUP_MIN_CHARS));
+    if (!dup.includes(true)) return [s];
+    const kept: string[] = [];
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const next = kept[0];
+      const hasChild = next !== undefined && /^\s*[-*]\s/.test(next) && indent(next) > indent(lines[i]);
+      if (dup[i] && !hasChild) continue;
+      const after = kept.find((l) => l.trim());
+      if (/^#{4,}/.test(lines[i]) && (!after || /^#{4,}/.test(after))) continue;
+      kept.unshift(lines[i]);
+    }
+    const content = kept.join("\n").trim();
+    return content ? [{ ...s, content }] : [];
+  });
+}
+
+/**
+ * 안건 마무리 (재구성 성공·실패와 무관하게 항상): 기타에서 꺼내기 → 순서 정리 → 중복 불릿 제거.
+ * 순서는 첫 등장 순, 기타만 맨 끝. origin = 재구성 전 안건 (꺼낸 소주제의 등장 위치를 찾는 데 씀)
+ */
+export function finalizeAgendas(sections: Section[], origin: Section[] = []): Section[] {
+  const all = promoteFromMisc(sections, origin);
+  const pos = (s: Section) => s.at ?? Number.MAX_SAFE_INTEGER;
+  const ordered = all.filter((s) => !isMisc(s.title)).sort((a, b) => pos(a) - pos(b));
+  return dedupeBullets([...ordered, ...all.filter((s) => isMisc(s.title))]);
 }
 
 /* ---------- 기한 검증 (날조 방지) ---------- */

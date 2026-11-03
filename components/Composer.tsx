@@ -37,6 +37,7 @@ import {
   autoFill,
   dateLabel,
   emptyMeta,
+  finalizeAgendas,
   frameDigest,
   mergeSections,
   groupMinorSections,
@@ -547,7 +548,8 @@ export default function Composer() {
         parseMeta(r.metaLines, meta);
       }
       setBusy(`회의록 작성 중… ${Math.round((parts.length / (parts.length + 1)) * 100)}% (마무리 정리)`);
-      let merged = mergeSections(all);
+      const origin = mergeSections(all);
+      let merged = origin;
       const digest = regroupDigest(merged, meta.gist);
       if (digest) {
         try {
@@ -557,7 +559,7 @@ export default function Composer() {
           // 실패해도 기존 안건 그대로 진행
         }
       }
-      const sections = groupMinorSections(merged);
+      const sections = finalizeAgendas(groupMinorSections(merged), origin);
 
       const needTitle = !mi.title;
       const needPeople = !mi.participants.length;
