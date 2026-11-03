@@ -58,6 +58,10 @@ test("body: 뜻이 안 통하는 말은 생략, 근거 없는 약어 풀이 금�
   }
 });
 
+test("body: 공지·전달 사항은 잡담으로 버리지 않음 (상세·간결 모두)", () => {
+  for (const brief of [false, true]) assert.ok(systemPrompt("body", { ...base, brief }).includes("운영비·회식·점심·비품"));
+});
+
 test("frame: 결정사항은 합의·지시된 것만", () => {
   const s = systemPrompt("frame", base);
   assert.ok(s.includes("실제로 합의·지시된 것만 3~6개"));

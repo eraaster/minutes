@@ -33,7 +33,6 @@ import {
   MeetingType,
   PromptCtx,
   Section,
-  applyRegroup,
   assemble,
   autoFill,
   dateLabel,
@@ -44,8 +43,8 @@ import {
   parseBody,
   parseMeta,
   parseParticipants,
-  parseRegroup,
   regroupDigest,
+  regroupSections,
   speakerCandidates,
 } from "@/lib/minutes";
 
@@ -120,9 +119,6 @@ export default function Composer() {
   const [fixParts, setFixParts] = useState<FixPart[] | null>(null); // 교정 변경 내역 (항목별 되돌리기)
   const [sel, setSel] = useState(""); // 녹취록에서 드래그로 선택한 단어
   const [reg, setReg] = useState<{ variant: string; term: string; desc: string } | null>(null); // 사전 등록 입력창
-  const [findOpen, setFindOpen] = useState(false);
-  const [findQ, setFindQ] = useState("");
-  const [replQ, setReplQ] = useState("");
   const editedRef = useRef(false);
   const [minutes, setMinutes] = useState("");
   const [fromHistory, setFromHistory] = useState(false);
@@ -431,6 +427,7 @@ export default function Composer() {
     const c = (data.content || "").trim();
     if (!c) throw new Error("AI 응답이 비어 있습니다. 다시 시도해 주세요.");
     if (data.model) usedModels.current.add(String(data.model));
+    if (stage === "body" && data.truncated) truncatedParts.current++;
     if (data.fallbackFrom && !llmFallback.current) {
       llmFallback.current = String(data.fallbackFrom);
       setNotice(
@@ -441,6 +438,7 @@ export default function Composer() {
   };
   const usedModels = useRef<Set<string>>(new Set());
   const llmFallback = useRef("");
+  const truncatedParts = useRef(0); // 출력 한도에 걸려 뒷부분이 잘린 body 구간 수
 
   /* ----- 녹취록 교정: 2,800자 구간마다 음성인식 오류만 고침 ----- */
   const fixTranscript = async () => {
@@ -516,6 +514,7 @@ export default function Composer() {
     setMinutes("");
     usedModels.current = new Set();
     llmFallback.current = "";
+    truncatedParts.current = 0;
     const mi = info();
     const base = {
       brief,
@@ -552,8 +551,7 @@ export default function Composer() {
       const digest = regroupDigest(merged, meta.gist);
       if (digest) {
         try {
-          const map = parseRegroup(await callLLM("regroup", digest, base), merged.map((s) => s.title));
-          if (map) merged = applyRegroup(merged, map);
+          merged = regroupSections(merged, await callLLM("regroup", digest, base));
         } catch (e) {
           if (e instanceof AuthError) throw e;
           // 실패해도 기존 안건 그대로 진행
@@ -581,13 +579,16 @@ export default function Composer() {
       if (needPeople && fin.participants.length) setPeople(fin.participants.join(", "));
 
       fin.models = [...usedModels.current].map(shortModel);
-      const full = assemble(fin, sections, meta, frame, text);
+      const full = assemble(fin, sections, meta, frame, text, glossary);
       if (llmFallback.current) {
         setNotice(
           `일부 구간은 ${shortModel(llmFallback.current)} 한도 초과로 다른 모델(${fin.models
             .filter((m) => m !== shortModel(llmFallback.current))
             .join(", ")})이 작성했어요. 회의록 맨 아래에 사용한 모델이 적혀 있어요.`
         );
+      }
+      if (truncatedParts.current) {
+        setNotice(`${truncatedParts.current}개 구간이 AI 출력 한도에 걸려 뒷부분 내용이 빠졌을 수 있어요. 녹취록과 대조해 주세요.`);
       }
       setMinutes(full);
 
@@ -609,18 +610,12 @@ export default function Composer() {
     }
   };
 
-  /** 녹취록 일괄 변경 (찾아 바꾸기·사전 등록). 전사 중이면 구간 텍스트에도 적용해야 덮어써지지 않음 */
+  /** 녹취록 일괄 변경 (유출 정리·사전 등록). 전사 중이면 구간 텍스트에도 적용해야 덮어써지지 않음 */
   const rewrite = (fn: (t: string) => string) => {
     if (pending === 0) setPreFix((p) => p ?? transcript);
     commit(segsRef.current.map((s) => ({ ...s, text: fn(s.text) })));
     setFixParts(null);
     setTranscript(fn);
-  };
-  const findCount = findQ ? transcript.split(findQ).length - 1 : 0;
-  const replaceAll = () => {
-    if (!findCount) return;
-    rewrite((t) => t.split(findQ).join(replQ));
-    flash(`${findCount}곳을 바꿨어요.`);
   };
   /** AI로 보내기 전 프롬프트 유출 정리 (사전 전체 기준, 연속 나열 구간만). 정리된 녹취록을 돌려줌 */
   const autoCleanLeaks = () => {
@@ -973,9 +968,6 @@ export default function Composer() {
               >
                 사전에 등록
               </button>
-              <button className="btn ghost sm" disabled={pending > 0} onClick={() => setFindOpen((v) => !v)}>
-                찾아 바꾸기
-              </button>
               <button
                 className="btn sm"
                 disabled={!canSummarize}
@@ -1021,22 +1013,6 @@ export default function Composer() {
               </form>
             )}
           </div>
-          {findOpen && (
-            <form
-              className="tools"
-              onSubmit={(e) => {
-                e.preventDefault();
-                replaceAll();
-              }}
-            >
-              <input aria-label="찾을 말" value={findQ} onChange={(e) => setFindQ(e.target.value)} placeholder="찾을 말" autoComplete="off" />
-              <input aria-label="바꿀 말" value={replQ} onChange={(e) => setReplQ(e.target.value)} placeholder="바꿀 말" autoComplete="off" />
-              <span className="muted">{findCount}곳</span>
-              <button type="submit" className="btn sm" disabled={!findCount || pending > 0}>
-                모두 바꾸기
-              </button>
-            </form>
-          )}
           <textarea
             className="transcript"
             value={transcript}

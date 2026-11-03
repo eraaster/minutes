@@ -7,6 +7,8 @@
  *  3) assemble : 같은 주제 제목끼리 합치고, 회사 회의록 양식(Meeting Result)으로 조립
  */
 
+import type { GlossaryEntry } from "./glossary";
+
 export type MeetingType = "agenda" | "external" | "weekly";
 
 export const MEETING_TYPES: { value: MeetingType; label: string }[] = [
@@ -245,6 +247,26 @@ export function applyRegroup(sections: Section[], map: Map<string, string>): Sec
   });
 }
 
+/** 재구성 전후 비교용: 불릿 수·글자 수 합계. applyRegroup이 덧붙이는 "####" 소제목 줄은 세지 않음 */
+function measure(sections: Section[]) {
+  const body = sections.map((s) => s.content.replace(/^#{4,}.*$/gm, "")).join("\n");
+  return { bullets: (body.match(/^\s*[-*]\s/gm) || []).length, chars: body.replace(/\s/g, "").length };
+}
+
+export function regroupLost(before: Section[], after: Section[]): boolean {
+  const a = measure(before);
+  const b = measure(after);
+  return b.bullets < a.bullets || b.chars < a.chars;
+}
+
+/** LLM 응답으로 안건 재구성. 파싱에 실패하거나 내용이 줄면 원래 안건을 그대로 돌려줌 */
+export function regroupSections(sections: Section[], raw: string): Section[] {
+  const map = parseRegroup(raw, sections.map((s) => s.title));
+  if (!map) return sections;
+  const next = applyRegroup(sections, map);
+  return regroupLost(sections, next) ? sections : next;
+}
+
 /**
  * 안건 과분할 방지: 안건이 6개를 넘으면 짧은 안건(불릿 2개 이하 & 300자 미만)을
  * 맨 끝 "기타 공지 및 논의"로 모음. 제목이 "기타"로 시작하는 안건은 항상 모음.
@@ -357,6 +379,31 @@ export function verifyBodyDates(text: string, transcript: string, meeting: Date)
   });
   // 지운 자리에 남은 이중 공백 정리 (줄 앞 들여쓰기는 유지)
   return out === text ? text : out.replace(/(\S) {2,}/g, "$1 ");
+}
+
+const GLOSS_RE = /(?<=[가-힣A-Za-z0-9&*])[(（]([^()（）\n]{2,40})[)）]/g;
+
+/**
+ * 붙여 쓴 괄호 풀이 "단어(설명)"를 근거와 대조해, 근거가 없으면 괄호만 지움. 앞에 공백이 있는 "(발언자)"는 대상이 아님.
+ *  - 그대로 둠: 숫자·"미정"이 든 괄호(수치·날짜는 verifyBodyDates 담당), 근거가 있는 풀이
+ *  - 근거: 앞 단어에 해당하는 사전 항목, 녹취록, 참석자 명단. 쉼표로 나뉜 풀이는 조각마다 근거가 있어야 함
+ *  - 영문 약어의 풀이는 문구 전체가 있어야 하고, 그 밖의 단어는 낱말별로 있으면 인정 (요약하며 말을 다듬은 괄호를 살리기 위해)
+ */
+export function stripUnfoundedGloss(text: string, transcript: string, glossary: GlossaryEntry[] = [], participants: string[] = []): string {
+  const norm = (s: string) => squash(s).replace(/\*/g, "").toLowerCase();
+  const base = norm(`${transcript}${participants.join("")}`);
+  return text.replace(GLOSS_RE, (all: string, gloss: string, off: number, src: string) => {
+    if (/\d|미정/.test(gloss)) return all;
+    const before = src.slice(Math.max(0, off - 40), off);
+    const head = norm(before);
+    if (norm(before.match(/\S+$/)?.[0] ?? "").includes(norm(gloss))) return ""; // "남편(팀주)"처럼 앞말 반복
+    const entries = glossary.filter((e) => [e.term, ...e.variants].some((n) => n.trim() && head.endsWith(norm(n))));
+    const hay = base + entries.map((e) => norm(`${e.term}${e.variants.join("")}${e.desc}`)).join("");
+    const acronym = /[A-Z]/.test(before.replace(/\*/g, "").match(/[A-Za-z0-9&+._-]+$/)?.[0] ?? "");
+    const found = (part: string) =>
+      acronym ? hay.includes(norm(part)) : part.trim().split(/\s+/).every((w) => hay.includes(norm(w)));
+    return gloss.split(/[,，]/).every(found) ? all : "";
+  });
 }
 
 /** 표의 '기한' 칸 하나를 녹취록과 대조해 고침 */
@@ -487,16 +534,21 @@ function table(head: string[], rows: string[][]): string {
   ].join("\n");
 }
 
-export function assemble(info: MeetingInfo, sections0: Section[], meta: Meta, frameRaw: string, transcript = ""): string {
+export function assemble(
+  info: MeetingInfo,
+  sections0: Section[],
+  meta: Meta,
+  frameRaw: string,
+  transcript = "",
+  glossary: GlossaryEntry[] = []
+): string {
   const f = parseFrame(frameRaw);
   const md = info.date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const meeting = md ? new Date(Number(md[1]), Number(md[2]) - 1, Number(md[3])) : new Date();
-  // 본문(안건 제목·주요내용)의 날짜·연도·월을 녹취록과 대조
+  // 본문(안건 제목·주요내용)의 날짜·연도·월과 괄호 풀이를 녹취록과 대조
+  const verify = (t: string) => verifyBodyDates(stripUnfoundedGloss(t, transcript, glossary, info.participants), transcript, meeting);
   const sections = transcript.trim()
-    ? sections0.map((s) => ({
-        title: verifyBodyDates(s.title, transcript, meeting),
-        content: verifyBodyDates(s.content, transcript, meeting),
-      }))
+    ? sections0.map((s) => ({ title: verify(s.title), content: verify(s.content) }))
     : sections0;
   const out: string[] = [];
 

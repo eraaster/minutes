@@ -764,10 +764,6 @@ a.btn {
 .fixlist ins { color: var(--accent); text-decoration: none; font-weight: 600; }
 .fixlist li .btn { margin-left: auto; }
 
-/* 녹취록 도구줄 (찾아 바꾸기) */
-.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
-.tools input { flex: 1 1 130px; width: auto; padding: 7px 9px; font-size: 14px; }
-.tools .btn { flex: none; }
 .sectionhead { flex-wrap: wrap; }
 .headbtns { flex-wrap: wrap; }
 
@@ -999,7 +995,7 @@ a.btn {
 
 /* iOS는 16px 미만 입력칸을 누르면 화면을 확대함 */
 @media (max-width: 640px) {
-  .tools input, .popover input { font-size: 16px; }
+  .popover input { font-size: 16px; }
 }
 
 /* 배경 · 회의 메모 */
