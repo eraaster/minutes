@@ -58,14 +58,30 @@ export function stripPromptLeak(text: string, prompt: string, terms: string[]): 
   const kept = sentencesOf(text)
     .filter((s) => !refs.some((r) => similarity(squeeze(s), r) >= LEAK_SIMILARITY))
     .join(" ");
-  const sent = terms.filter((t) => t.trim() && prompt.includes(t)).sort((a, b) => b.length - a.length);
-  if (!sent.length) return kept;
-  const alt = sent.map((t) => t.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*")).join("|");
+  return stripTermRuns(kept, terms.filter((t) => prompt.includes(t))).text;
+}
+
+/** 용어 3개 이상이 쉼표·공백으로만 이어진 구간 삭제. 줄 단위로 처리해 줄바꿈과 안 바뀐 줄은 그대로 둠, 비게 된 줄은 뺌 */
+export function stripTermRuns(text: string, terms: string[]): { text: string; count: number } {
+  const alt = terms
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*"))
+    .join("|");
+  if (!alt) return { text, count: 0 };
   const run = new RegExp(
     `(?<![가-힣A-Za-z0-9])(?:${alt})(?:[\\s,，、]+(?:${alt})){2,}(?![가-힣A-Za-z0-9])[\\s,，、.。]*`,
     "gi"
   );
-  return kept.replace(run, " ").replace(/\s+/g, " ").replace(/^[\s,，、.。]+|[\s,，、]+$/g, "");
+  let count = 0;
+  const lines = text.split("\n").flatMap((line) => {
+    const next = line.replace(run, () => (count++, " "));
+    if (next === line) return [line];
+    const tidy = next.replace(/\s+/g, " ").replace(/^[\s,，、.。]+|[\s,，、]+$/g, "");
+    return tidy ? [tidy] : [];
+  });
+  return { text: lines.join("\n"), count };
 }
 
 /** 문단/문장 경계 기준으로 limit 글자 이하 조각으로 나눔 */

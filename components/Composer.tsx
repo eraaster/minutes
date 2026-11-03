@@ -26,7 +26,7 @@ import {
   useHydrated,
   useStore,
 } from "@/lib/store";
-import { FixPart, applyFix, cleanTranscript, mdToHtml, rejectFix, splitText, stripPromptLeak, wordDiff } from "@/lib/text";
+import { FixPart, applyFix, cleanTranscript, mdToHtml, rejectFix, splitText, stripPromptLeak, stripTermRuns, wordDiff } from "@/lib/text";
 import {
   MEETING_TYPES,
   MeetingInfo,
@@ -619,6 +619,14 @@ export default function Composer() {
     rewrite((t) => t.split(findQ).join(replQ));
     flash(`${findCount}곳을 바꿨어요.`);
   };
+  /** 저장된 녹취록의 프롬프트 유출 정리: 사전 전체 기준, 연속 나열 구간만 삭제 */
+  const cleanLeaks = () => {
+    const terms = glossary.map((e) => e.term);
+    const { count } = stripTermRuns(transcript, terms);
+    if (!count) return flash("정리할 유출 문구가 없어요.");
+    rewrite((t) => stripTermRuns(t, terms).text);
+    flash(`유출 문구 ${count}곳을 지웠어요. 되돌리기로 복구할 수 있어요.`);
+  };
   /** 드래그 선택 → 사전 등록 + 지금 녹취록에 바로 적용 (이번에 등록한 형태만. 다른 용어는 보호) */
   const registerEntry = () => {
     const term = reg?.term.trim();
@@ -960,6 +968,14 @@ export default function Composer() {
               </button>
               <button className="btn ghost sm" disabled={pending > 0} onClick={() => setFindOpen((v) => !v)}>
                 찾아 바꾸기
+              </button>
+              <button
+                className="btn ghost sm"
+                disabled={pending > 0 || !!busy || !transcript || !glossary.length}
+                onClick={cleanLeaks}
+                title="용어 사전의 용어 3개 이상이 쉼표·공백으로만 이어진 구간을 지워요 (사전이 비어 있으면 꺼져요)"
+              >
+                유출 문구 정리
               </button>
               <button
                 className="btn sm"
