@@ -116,6 +116,7 @@ export default function Composer() {
 
   const [transcript, setTranscript] = useState("");
   const [preFix, setPreFix] = useState<string | null>(null); // 교정 전 녹취록 (되돌리기용)
+  const leakKept = useRef(false); // 되돌리기를 눌렀으면 이 녹취록은 다시 자동 정리하지 않음 (잘못 지운 걸 복구할 수 있게)
   const [fixParts, setFixParts] = useState<FixPart[] | null>(null); // 교정 변경 내역 (항목별 되돌리기)
   const [sel, setSel] = useState(""); // 녹취록에서 드래그로 선택한 단어
   const [reg, setReg] = useState<{ variant: string; term: string; desc: string } | null>(null); // 사전 등록 입력창
@@ -443,7 +444,8 @@ export default function Composer() {
 
   /* ----- 녹취록 교정: 2,800자 구간마다 음성인식 오류만 고침 ----- */
   const fixTranscript = async () => {
-    const orig = transcript;
+    const before = transcript;
+    const orig = autoCleanLeaks();
     if (!orig.trim()) return;
     setError("");
     const ctxBase = { ...info(), dateLabel: dateLabel(date), background, memo } as PromptCtx;
@@ -479,7 +481,7 @@ export default function Composer() {
         return;
       }
       editedRef.current = true;
-      setPreFix(orig);
+      setPreFix(before); // 자동 정리 전 상태까지 되돌림
       setFixParts(out);
       setTranscript(joinFix(out));
       setNotice(`녹취록 교정: ${n}곳 수정${skip}. 녹취록 아래 목록에서 하나씩 되돌릴 수 있어요.`);
@@ -491,6 +493,7 @@ export default function Composer() {
   };
   const undoFix = () => {
     if (preFix === null) return;
+    leakKept.current = true;
     setTranscript(preFix);
     setPreFix(null);
     setFixParts(null);
@@ -507,7 +510,7 @@ export default function Composer() {
   };
 
   const makeMinutes = async () => {
-    const text = transcript.trim();
+    const text = autoCleanLeaks().trim();
     if (!text) return;
     setError("");
     setMinutes("");
@@ -619,13 +622,15 @@ export default function Composer() {
     rewrite((t) => t.split(findQ).join(replQ));
     flash(`${findCount}곳을 바꿨어요.`);
   };
-  /** 저장된 녹취록의 프롬프트 유출 정리: 사전 전체 기준, 연속 나열 구간만 삭제 */
-  const cleanLeaks = () => {
+  /** AI로 보내기 전 프롬프트 유출 정리 (사전 전체 기준, 연속 나열 구간만). 정리된 녹취록을 돌려줌 */
+  const autoCleanLeaks = () => {
+    if (leakKept.current) return transcript;
     const terms = glossary.map((e) => e.term);
-    const { count } = stripTermRuns(transcript, terms);
-    if (!count) return flash("정리할 유출 문구가 없어요.");
+    const { text, count } = stripTermRuns(transcript, terms);
+    if (!count) return transcript;
     rewrite((t) => stripTermRuns(t, terms).text);
-    flash(`유출 문구 ${count}곳을 지웠어요. 되돌리기로 복구할 수 있어요.`);
+    flash(`유출 문구 ${count}곳을 자동으로 정리했어요`);
+    return text;
   };
   /** 드래그 선택 → 사전 등록 + 지금 녹취록에 바로 적용 (이번에 등록한 형태만. 다른 용어는 보호) */
   const registerEntry = () => {
@@ -666,6 +671,7 @@ export default function Composer() {
     commit([]);
     editedRef.current = false;
     setTranscript("");
+    leakKept.current = false;
     setPreFix(null);
     setFixParts(null);
     setMinutes("");
@@ -700,6 +706,7 @@ export default function Composer() {
     setDate(h.date);
     setMemo(h.memo || "");
     setTranscript(h.transcript);
+    leakKept.current = false;
     setPreFix(null);
     setFixParts(null);
     setMinutes(h.minutes);
@@ -968,14 +975,6 @@ export default function Composer() {
               </button>
               <button className="btn ghost sm" disabled={pending > 0} onClick={() => setFindOpen((v) => !v)}>
                 찾아 바꾸기
-              </button>
-              <button
-                className="btn ghost sm"
-                disabled={pending > 0 || !!busy || !transcript || !glossary.length}
-                onClick={cleanLeaks}
-                title="용어 사전의 용어 3개 이상이 쉼표·공백으로만 이어진 구간을 지워요 (사전이 비어 있으면 꺼져요)"
-              >
-                유출 문구 정리
               </button>
               <button
                 className="btn sm"

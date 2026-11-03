@@ -46,7 +46,9 @@ test("실제 녹취의 유출 문장 3개: 나열만 지워지고 말은 남음"
 
 test("저장된 녹취록 정리: 줄바꿈 유지, 안 바뀐 줄은 그대로, 삭제 횟수 반환", () => {
   const input = `[00:00]  첫 줄   그대로.\n${LIST}\n[01:40] ${LIST}\n\n끝. ${LIST}`;
-  assert.deepEqual(stripTermRuns(input, TERMS), { text: "[00:00]  첫 줄   그대로.\n[01:40]\n\n끝.", count: 3 });
+  assert.deepEqual(stripTermRuns(input, TERMS), { text: "[00:00]  첫 줄   그대로.\n\n끝.", count: 3 });
+  // 전사 구간 형식: 타임스탬프만 남은 구간은 빈 줄까지 정리
+  assert.equal(stripTermRuns(`[00:00] 앞.\n\n[01:40] ${LIST}\n\n[03:20] 뒤.`, TERMS).text, "[00:00] 앞.\n\n[03:20] 뒤.");
   assert.deepEqual(stripTermRuns("GPUBASE에서 SSH가 필요", TERMS), { text: "GPUBASE에서 SSH가 필요", count: 0 });
   assert.deepEqual(stripTermRuns(LIST, []), { text: LIST, count: 0 });
 });

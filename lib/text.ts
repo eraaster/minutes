@@ -61,7 +61,7 @@ export function stripPromptLeak(text: string, prompt: string, terms: string[]): 
   return stripTermRuns(kept, terms.filter((t) => prompt.includes(t))).text;
 }
 
-/** 용어 3개 이상이 쉼표·공백으로만 이어진 구간 삭제. 줄 단위로 처리해 줄바꿈과 안 바뀐 줄은 그대로 둠, 비게 된 줄은 뺌 */
+/** 용어 3개 이상이 쉼표·공백으로만 이어진 구간 삭제. 줄 단위로 처리해 줄바꿈과 안 바뀐 줄은 그대로 둠, 비거나 타임스탬프만 남은 줄은 뺌 */
 export function stripTermRuns(text: string, terms: string[]): { text: string; count: number } {
   const alt = terms
     .map((t) => t.trim())
@@ -79,9 +79,9 @@ export function stripTermRuns(text: string, terms: string[]): { text: string; co
     const next = line.replace(run, () => (count++, " "));
     if (next === line) return [line];
     const tidy = next.replace(/\s+/g, " ").replace(/^[\s,，、.。]+|[\s,，、]+$/g, "");
-    return tidy ? [tidy] : [];
+    return tidy && !/^\[\d{1,2}:\d{2}(?::\d{2})?\]$/.test(tidy) ? [tidy] : [];
   });
-  return { text: lines.join("\n"), count };
+  return { text: count ? lines.join("\n").replace(/\n{3,}/g, "\n\n") : text, count };
 }
 
 /** 문단/문장 경계 기준으로 limit 글자 이하 조각으로 나눔 */
